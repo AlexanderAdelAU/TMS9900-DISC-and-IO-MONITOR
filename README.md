@@ -5,4 +5,4 @@ For example all the XOP Defintions are defined, such as CALL, PUSH, POP, RET etc
 to interface to a Western Digital type Floppy Disc Controller (FDC 1797) if implemented.   The Disc IO provides a basic BIOS but relies on a
 CP/M type DOS system to be fully functional. 
 
-The Monitor is unlikely to be immediately reusable in your current system but some to the routines can be ported as needed.
+The Monitor is unlikely to be immediately reusable in your current system unless you use a WD1797 Floppy Disc Controller, but some to the routines can be ported as needed.
