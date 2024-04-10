@@ -1,4 +1,4 @@
-# TMS9900-DISC-and-IO-MONITOR
+# TMS9900-DISC MONITOR
 
 The Memory Resident Monitor is responsible for providing the core IO and DISC interfaces required to the Single Board Computer.   
 For example all the XOP Defintions are defined, such as CALL, PUSH, POP, RET etc as well as all the interfaces routines required
