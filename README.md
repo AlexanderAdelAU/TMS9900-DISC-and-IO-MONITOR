@@ -5,9 +5,9 @@ For example all the XOP Defintions are defined, such as CALL, PUSH, POP, RET etc
 to interface to a Western Digital type Floppy Disc Controller (FDC 1797), if implemented.   The Disc IO provides a basic BIOS but relies on a
 CP/M type DOS system to be fully functional. 
 
-The Monitor provides the following commands: (Q,O,[space],G,R
-Q(Quick Boot)  This will boot the OS from the disc in drive 0
+The Monitor provides the following commands: (Q,O,[space],G,R,W)
 
+**Q(Quick Boot)**  This will boot the OS from the disc in drive 0
 ~~~
 >Q--Booting....
 
@@ -28,7 +28,7 @@ Release date 2 Oct 19
     C370  C000 1616 04C1 D060 CC3A 9801 C30C 1310
 
 ~~~
-**<HexAddress>[Space]** Will open the memory location for editing.  Space will continue the editing to the next memory address
+**<HexAddress>(Space)** Will open the memory location for editing.  Space will continue the editing to the next memory address
 
 **<HexAddress>O(Go)**. Go will execute the memory based programme that is located at the HexAddress 
 
