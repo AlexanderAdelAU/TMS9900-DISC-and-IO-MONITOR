@@ -9,6 +9,7 @@ The Monitor provides the following commands: (Q,O,[space],G,R,W,U)
 
 **Q(Quick Boot)**  This will boot the OS from the disc in drive 0
 ~~~
+<TMS9900 DISC MONITOR V2.1>
 >Q--Booting....
 
 Shell Version 2.0
