@@ -28,11 +28,12 @@ Release date 2 Oct 19
     C370  C000 1616 04C1 D060 CC3A 9801 C30C 1310
 
 ~~~
-**<HexAddress>(Space)** Will open the memory location for editing.  Space will continue the editing to the next memory address
+**<HexAddress>(Space )** Will open the memory location for editing.  Space will continue the editing to the next memory address
 
 **<HexAddress>O(Go)**. Go will execute the memory based programme that is located at the HexAddress 
 
-**<HexAddress>W(Workspace Register)**.  This will enter the hexaddress into the workspace register and define your workspace.  W by itself will print the value of current workspace register.
+**<HexAddress>W(Workspace Register)**.  This will enter the hexaddress into the workspace register and define your workspace.  W by itself will print the 
+ value of current workspace register.
 
 **<HexAddress>R(Registers)**.  This command will print out the workspace registers located at the hexaddress, or will use the current workspace value.
 For example:
