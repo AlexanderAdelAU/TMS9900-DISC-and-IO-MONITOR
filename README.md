@@ -15,7 +15,13 @@ Shell Version 2.0
 Release date 2 Oct 19
 %
 ~~~
-**U(Upload)**   This command will upload a hex file into the TMS9900 SBC memory space.  This is how the system files are created etc.  Once the **U** command has been issued, go to your terminal and select the Hex file that you want to upload.  The Upload command will sit forever waiting for the **:** colon to begin.  Once received it will then handshake to upload the full file.
+**U(Upload)**   This command will upload a hex file into the TMS9900 SBC memory space.  This is how the system files are created etc.  Once the **U** command has been issued, go to your terminal and select the Hex file that you want to upload.  The Upload command will sit forever waiting for the **:** colon to begin.  Once received it will then handshake to upload the full file.  For example:
+
+~~~
+<TMS9900 DISC MONITOR V2.1>
+>U......................................................................................
+
+~~~
 
 **<HexAddress>O(Open)**  Will open or list of 8 rows displaying the memory contents begining at the HexAddress.  Press Space to show the next 8 rows etc.
 ~~~
