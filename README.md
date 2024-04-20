@@ -39,7 +39,7 @@ Release date 2 Oct 19
 ~~~
 **<HexAddress>(Space )** Will open the memory location for editing.  Space will continue the editing to the next memory address
 
-**<HexAddress>O(Go)**. Go will execute the memory based programme that is located at the HexAddress.  So, you can use the Upload command to load the Shell, DOS etc and then use the Go command to run the disc initialisation or (Sysgen) programme.
+**<HexAddress>G(Go)**. Go will execute the memory based programme that is located at the HexAddress.  So, you can use the Upload command to load the Shell, DOS etc and then use the Go command to run the disc initialisation or (DISKINIT) programme.
 
 **<HexAddress>W(Workspace Register)**.  This will enter the hexaddress into the workspace register and define your workspace.  W by itself will print the 
  value of current workspace register.
