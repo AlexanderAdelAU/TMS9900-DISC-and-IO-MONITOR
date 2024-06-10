@@ -2,8 +2,7 @@
 
 The ROM Memory Resident Monitor is responsible for providing the core IO and DISC interfaces required to the Single Board Computer.   
 For example all the XOP Defintions are defined, such as CALL, PUSH, POP, RET etc as well as all the interfaces routines required
-to interface to a Western Digital type Floppy Disc Controller (FDC 1797), if implemented.   The Disc IO provides a basic BIOS but relies on a
-CP/M type DOS system to be fully functional. 
+to interface to a Western Digital type Floppy Disc Controller (FDC 1797), and a IDE/SATA interface that will support the latest Solid State Drives (SSD) (version 3).   The Disc IO provides a basic BIOS but relies on a CP/M type DOS system to be fully functional. 
 
 The Monitor provides the following commands: (Q,O,[space],G,R,W,U)
 
