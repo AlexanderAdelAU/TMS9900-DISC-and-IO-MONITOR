@@ -3,10 +3,10 @@
 The ROM Memory Resident Monitor is responsible for providing the core IO and DISC interfaces required to the Single Board Computer.   
 For example all the XOP Defintions are defined, such as CALL, PUSH, POP, RET etc as well as all the interfaces routines required
 to interface to a Western Digital type Floppy Disc Controller (FDC 1797), and a IDE/SATA interface that will support the latest Solid State Drives (SSD) (version 3).   The Disc IO provides a basic BIOS but relies on a CP/M type DOS system to be fully functional.   Note that for versions 4.0 and greater:
-	* The Floppy Disc Interfaces have been removed as they are replaced by the IDE, and are therefore redundant.
-        * Memory segmentation is supported.  For an example see the TMS_99105A_SBC repository
+- The Floppy Disc Interfaces have been removed as they are replaced by the IDE, and are therefore redundant.
+- Memory segmentation is supported.  For an example see the TMS_99105A_SBC repository.
 
-The Monitor provides the following commands: (Q,O,[space],G,R,W,U)
+## The Monitor provides the following commands: (Q,O,[space],G,R,W,U,V) ##
 
 **Q(Quick Boot)**  This will boot the OS from the disc in drive 0
 ~~~
