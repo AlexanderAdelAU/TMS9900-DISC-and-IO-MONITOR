@@ -2,7 +2,7 @@
 
 The ROM Memory Resident Monitor is responsible for providing the core IO and DISC interfaces required to the Single Board Computer.   
 For example all the XOP Defintions are defined, such as CALL, PUSH, POP, RET etc as well as all the interfaces routines required
-to interface to a Western Digital type Floppy Disc Controller (FDC 1797), and a IDE/SATA interface that will support the latest Solid State Drives (SSD) (version 3).   The Disc IO provides a basic BIOS but relies on a CP/M type DOS system to be fully functional. 
+to interface to a Western Digital type Floppy Disc Controller (FDC 1797), and a IDE/SATA interface that will support the latest Solid State Drives (SSD) (version 3).   The Disc IO provides a basic BIOS but relies on a CP/M type DOS system to be fully functional.   Note that for versions 4.0 and greater, the Floppy Disc Interfaces have been removed as they are replaced by the IDE, and are therefore redundant.
 
 The Monitor provides the following commands: (Q,O,[space],G,R,W,U)
 
@@ -57,6 +57,13 @@ For example:
     R12 = B235 R13 = 783D
     R14 = 1185 R15 = E4E1
 ~~~
+**U (Upload Hex File)**.  This command will allow you to upload a hex file (.H99) intel structure file to memory.  To execute the uploaded file just use the **<hexaddress>G(Go)** command.
+
+**V (Upload Segment Hex File)**.  This command will allow you to upload a segment hex file (.H99) which contains a modified intel structure file to memory.  The modification is that in this format, a signle byte is placed before the 16 bit address field which tells the monitor which segment to load the file into.  These files are identified in source through the use of the SEG psuedo op.  For example the following will inster the hex 0x01 into the H99 file just before the address field:
+```
+	SEG  1
+	AORG	500H
+```
 
 These basic commands are generally all that is required of a basic Monitor as the majority of all the other tasks can be use normal programmes and the Operating System.
 
