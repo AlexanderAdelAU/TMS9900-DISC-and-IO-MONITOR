@@ -2,7 +2,9 @@
 
 The ROM Memory Resident Monitor is responsible for providing the core IO and DISC interfaces required to the Single Board Computer.   
 For example all the XOP Defintions are defined, such as CALL, PUSH, POP, RET etc as well as all the interfaces routines required
-to interface to a Western Digital type Floppy Disc Controller (FDC 1797), and a IDE/SATA interface that will support the latest Solid State Drives (SSD) (version 3).   The Disc IO provides a basic BIOS but relies on a CP/M type DOS system to be fully functional.   Note that for versions 4.0 and greater, the Floppy Disc Interfaces have been removed as they are replaced by the IDE, and are therefore redundant.
+to interface to a Western Digital type Floppy Disc Controller (FDC 1797), and a IDE/SATA interface that will support the latest Solid State Drives (SSD) (version 3).   The Disc IO provides a basic BIOS but relies on a CP/M type DOS system to be fully functional.   Note that for versions 4.0 and greater:
+	* The Floppy Disc Interfaces have been removed as they are replaced by the IDE, and are therefore redundant.
+        * Memory segmentation is supported.  For an example see the TMS_99105A_SBC repository
 
 The Monitor provides the following commands: (Q,O,[space],G,R,W,U)
 
@@ -15,14 +17,24 @@ Shell Version 2.0
 Release date 2 Oct 19
 %
 ~~~
-**U(Upload)**   This command will upload a hex file into the TMS9900 SBC memory space.  This is how the system files are created etc.  Once the **U** command has been issued, go to your terminal and select the Hex file that you want to upload.  The Upload command will sit forever waiting for the **:** colon to begin.  Once received it will then handshake to upload the full file.  For example:
+**U(Upload)**   This command will upload an Intel hex file into the TMS9900 SBC memory space.  This is how the system files are created etc.  Once the **U** command has been issued, go to your terminal and select the Hex file that you want to upload.  The Upload command will sit forever waiting for the **:** colon to begin.  Once received it will then handshake to upload the full file.  For example, here the dots indicate each 16 byte block of data (as per the intel format):
 
 ~~~
 <TMS9900 DISC MONITOR V2.1>
 >U......................................................................................
-
 ~~~
+Once uploaded, the loaded file can be exectued using the **<hex address>G(Go)>** command.
 
+**V (Upload Segment Hex File)**.  This command will allow you to upload a segment hex file.  This is a modified Intel hex file that contains an additional byte that is inserted before the address field to indicate which memory segment to insert the data into.  These files are identified in source through the use of the SEG psuedo op.  For example the following will inster the hex 0x01 into the H99 file just before the address field:
+```
+	SEG  <0,1> 	; Either 0 or 1
+	AORG	500H
+```
+During upload the segment V command will insert a plus sign in the response to indicate that the file is inserting into the requested memory segment.
+~~~
+<TMS9900 DISC MONITOR V43>
+>V.+.+.+.+.+.+.+.+.+.+.+.+.+.+.
+~~~
 **<HexAddress>O(Open)**  Will open or list of 8 rows displaying the memory contents begining at the HexAddress.  Press Space to show the next 8 rows etc.
 ~~~
 >C300O
@@ -57,13 +69,6 @@ For example:
     R12 = B235 R13 = 783D
     R14 = 1185 R15 = E4E1
 ~~~
-**U (Upload Hex File)**.  This command will allow you to upload a hex file (.H99) intel structure file to memory.  To execute the uploaded file just use the **<hexaddress>G(Go)** command.
-
-**V (Upload Segment Hex File)**.  This command will allow you to upload a segment hex file (.H99) which contains a modified intel structure file to memory.  The modification is that in this format, a signle byte is placed before the 16 bit address field which tells the monitor which segment to load the file into.  These files are identified in source through the use of the SEG psuedo op.  For example the following will inster the hex 0x01 into the H99 file just before the address field:
-```
-	SEG  1
-	AORG	500H
-```
 
 These basic commands are generally all that is required of a basic Monitor as the majority of all the other tasks can be use normal programmes and the Operating System.
 
