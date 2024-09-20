@@ -35,7 +35,7 @@ During upload the segment V command will insert a plus sign in the response to i
 <TMS9900 DISC MONITOR V43>
 >V.+.+.+.+.+.+.+.+.+.+.+.+.+.+.
 ~~~
-**<HexAddress>O(Open)**  Will open or list of 8 rows displaying the memory contents begining at the HexAddress.  Press Space to show the next 8 rows etc.
+**< HexAddress >O** Open.  This command Will open or list of 8 rows displaying the memory contents begining at the HexAddress.  Press Space to show the next 8 rows etc.
 ~~~
 >C300O
     C300  0460 C31A 0318 1319 1A20 0008 0D0A 07FF
@@ -48,18 +48,18 @@ During upload the segment V command will insert a plus sign in the response to i
     C370  C000 1616 04C1 D060 CC3A 9801 C30C 1310
 
 ~~~
-**<HexAddress>(Space )** Will open the memory location for editing.  Space will continue the editing to the next memory address
+**< HexAddress >Space**.  Pressing space bar Will open the memory location for editing.  Space will continue the editing to the next memory address
 
-**<HexAddress>G(Go)**. Go will execute the memory based programme that is located at the HexAddress.  So, you can use the Upload command to load the Shell, DOS etc and then use the Go command to run the disc initialisation or (DISKINIT) programme.
+**< HexAddress >G** Go.  This command will go to the memory specified memory location and begin running the code at that location.  So, you can use the Upload command to load the Shell, DOS etc and then use the Go command to run the disc initialisation or (DISKINIT) programme.
 
-**<HexAddress>W(Workspace Register)**.  This will enter the hexaddress into the workspace register and define your workspace.  W by itself will print the 
+**< HexAddress >W** Workspace.  This will enter the hexaddress into the workspace register and define your workspace.  W by itself will print the 
  value of current workspace register.
 
-**<HexAddress>R(Registers)**.  This command will print out the workspace registers located at the hexaddress, or will use the current workspace value.
+**< HexAddress >R** Registers.  This command will print out the workspace registers located at the hexaddress, or will use the current workspace value.
 For example:
 ~~~
->>4R
-     WP=0004
+>>400R
+     WP=0400
     R0  = DCA2 R1  = A8F9
     R2  = ED20 R3  = F66A
     R4  = ED30 R5  = F638
