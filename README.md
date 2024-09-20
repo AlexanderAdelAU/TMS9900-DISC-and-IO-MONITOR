@@ -25,9 +25,11 @@ Release date 2 Oct 19
 ~~~
 Once uploaded, the loaded file can be exectued using the **<hex address>G(Go)>** command.
 
-**V (Upload Segment Hex File)**.  This command will allow you to upload a segment hex file.  This is a modified Intel hex file that contains an additional byte that is inserted before the address field to indicate which memory segment to insert the data into.  These files are identified in source through the use of the SEG psuedo op.  For example the following will inster the hex 0x01 into the H99 file just before the address field:
+**V (Upload Segment Hex File)**.  This command will allow you to upload a segment hex file.  This is a modified Intel hex file that contains an additional byte that is inserted before the address field to indicate which memory segment to insert the data into.  These files are identified in assembler source code with the use of the SEG psuedo op.  For example the following will inster the hex 0x01 into the H99 file just before the address field:
 ```
 	SEG  <0,1> 	; Either 0 or 1
+	e.g.
+	SEG 1
 	AORG	500H
 ```
 During upload the segment V command will insert a plus sign in the response to indicate that the file is inserting into the requested memory segment.
@@ -55,10 +57,17 @@ During upload the segment V command will insert a plus sign in the response to i
 **< HexAddress >W** Workspace.  This will enter the hexaddress into the workspace register and define your workspace.  W by itself will print the 
  value of current workspace register.
 
+ ```
+>230W
+>W
+     WP = 0230
+
+```
+
 **< HexAddress >R** Registers.  This command will print out the workspace registers located at the hexaddress, or will use the current workspace value.
 For example:
 ~~~
->>400R
+>400R
      WP=0400
     R0  = DCA2 R1  = A8F9
     R2  = ED20 R3  = F66A
