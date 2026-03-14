@@ -1,0 +1,2060 @@
+                        ;
+                        ;-----------------------------------------------------------------------
+                        ;	MONITOR AND FDC INTERFACE ROUTINES for the TI99000 SBC
+                        ;
+                        ;	 Written by Alexander Cameron
+                        ;
+                        ;	The monitor routines are called from a DOS or other
+                        ;	programme to perform Console I/O and Disc I/O similar
+                        ;	to a BIOS.
+                        ;
+                        ;	Version 2.1	14th May 2020 - The year of the Corona Virus
+                        ;	Version 2.2	3rd February, 2024 -
+                        ;		Combined partial set of TIBUG commands into Monitor
+                        ;		and targeted for the SBC ROM.
+                        ;		RAM ADDRESS: EC00H-EFFFH;
+                        ;		ROM ADDRESS: F000H-FFFFH
+                        ;	VERSION 3.0	9th June, 2024
+                        ;		Support added to allows for a IDE/SATA interface using LBA sectors.
+                        ;	VERSION 4.1	29th July, 2024
+                        ;		Support segmented memory model and removal of Floppy Disc Code
+                        ;	VERSION 4.21	7th September, 2024
+                        ;		Support segmented memory model extension of a PSEL SET AND CLEAR
+                        ;	VERSION 4.4	FIXED XDOS CALL
+                        ;	VERSION 4.5	ALL STACK ORIENTED XOP CALLS NOW WILL ASSUME A PSEL AFFECTED STACK
+                        ;	VERSION 4.6	ADDED NEW ROUTINES TO ASSUME LOCAL READ AND WRITE TO DIRECTORY AND BAT AND POSSIBLE FAR READS
+                        ;		AND WRITES FOR READ AND WRITE SECTOR ROUTINES.
+                        ;	VERSION 4.7	FINALISED SUPPORT FOR MULTISEGMENT SUPPORT.
+                        ;	VERSION 4.8	ADDED RETURN TO BANNER SUPPORT TO PRESERVE MEMORY STATE - HELPS DEBUGGING.
+                        ;	VERSION 4.9     MINOR CHANGES
+                        ;---------------------------------------------------------------------------------------------------------
+                        ;
+  0000                  R0	EQU	0
+  0001                  R1	EQU	1
+  0002                  R2	EQU	2
+  0003                  R3	EQU	3
+  0004                  R4	EQU	4
+  0005                  R5	EQU	5
+  0006                  R6	EQU	6
+  0007                  R7	EQU	7
+  0008                  R8	EQU	8
+  0009                  R9	EQU	9		;Use to index workspace pointer not stack overflow
+  000A                  R10	EQU	10
+  000A                  SP	EQU	R10		;STACK POINTER
+  000B                  R11	EQU	11
+  000C                  R12	EQU	12
+  000C                  PORT	EQU	R12		;IO BASE
+  000D                  R13	EQU	13
+  000E                  R14	EQU	14
+  000F                  R15	EQU	15
+  000F                  ST	EQU	15
+                        ;
+                        ;XOP DEFINES FOR XOP REGISTERS TO MAKE READABILITY MORE EASY
+  0002                  XR2	EQU	2
+  0003                  XR3	EQU	3		;Use to index workspace pointer not stack overflow
+  0004                  XR4	EQU	4		;Use to index workspace pointer not stack overflow
+  0009                  XR9	EQU	9		;Use to index workspace pointer not stack overflow
+  000A                  XR10	EQU	10
+  000B                  XR11	EQU	11
+  000C                  XR12	EQU	12
+  000D                  XR13	EQU	13
+  000E                  XR14	EQU	14
+  000F                  XR15	EQU	15
+                        
+                        ;
+                        ;***************************************************
+                        ;
+                        ;	DEFINE SOME XOP'S.
+                        ;	ALL PROGRAMMES USE THESE XOPS
+                        ;
+                        ;****************************************************
+                        ;
+                        	DXOP	FAR_REF,0
+                        	DXOP	RETF,1
+                        	DXOP	SETSREG,2
+                        	DXOP	CALL_FAR,3
+                        	DXOP	CALL,6		;USED BY LOCAL CALLS
+                        	DXOP	RET,7		;USED BY LOCAL CALLS
+                        	DXOP	PUSH,8		;PUSH SINGLE REGISTER ;USED BY EXTERNAL CALLS
+                        	DXOP	POP,9		;USED BY EXTERNAL CALLS
+                        	DXOP	WHEX,10		;WRITE OUT A 16 BIT HEX VALUE
+                        	DXOP	RHEX,11		;READ IN A 16 BIT HEX VALUE
+                        	DXOP	WRITE,12		;WRITE CHAR IN MSB
+                        	DXOP	READ,13		;READ CHAR IN MSB
+                        	DXOP	MESG,14		;OUTPUT NULL TERMINATED MESSAGE
+                        	DXOP	DEBUG,15		;DEBUG CURRENT LOCATION & STORE INTO DEBUG_BUFFER
+                        ;
+                        ; SOME EQUATES.  NOTE WORKSP MUST BE IN COMMON MEMORY
+                        ;
+  F000                  MONORG:	EQU	0F000H		;ORIGIN FOR THIS MONITOR
+  0000                  INTVEC:	EQU	0000H		;START AT THE TOP
+  0040                  XOPVEC:	EQU	0040H
+  00B0                  INTWP:	EQU	00B0H		;;7 INT AND 16 XOPS WORKSPACES OF 16 BYTES EACH (I.E. R8 TO R15)
+  0130                  XOPWP:	EQU	0130H		;XOP WORKSPACE ALLOCATION FOR ALL XOPS
+  0230                  WORKSP:	EQU	0230H		;USE AREA BELOW XOP WORKSPACES - 32 BYTES
+  0500                  STACKP:	EQU	0500H		; MINOR COMMON STACK USED BY ALL PROGRAMMES
+  0088                  MON_PTR:	EQU	0088H		;MONITOR VECTOR.  PROGRAMMES CAN USE THIS
+  0500                  TPA:	EQU	0500H		;PROGRAME LOAD AREA
+                        ;
+                        ; THIS IS WHERE THE LBA (TWO WORDS) ARE STORED SO IT CAN BE LOADED
+                        ;
+  00A8                  LBA:	EQU	0A8H		;TWO WORDS (4 BYTES)
+  0084                  BDOSV:	EQU	084H		;VECTOR SUPPLIED BY SHELL.  SHELL AND BDOS MUST BE LOADED BEFORE CALLING THIS
+  0080                  EN_PSEL:	EQU	0080H		;ENABLE PSEL MAPPING
+  FF7F                  DISABLE_PSEL:	EQU	0FF7FH		;ENABLE PSEL MAPPING
+                        ;
+                        ; DECLARE VARIABLES THAT NEED RAM
+                        ;
+  ED00                  BUFFER:	EQU	MONORG-0300H		;THIS IS A TEMPORARY BUFFER USED BY BOOT
+  EF00                  LOCAL_RAM: 	EQU	MONORG-0100H
+  EF00                  	AORG	LOCAL_RAM
+  EF00                  WORKSP2:	BSS	32
+                        
+                        ;
+                        ;	NOTE THIS IS USED BY DEBUG TO STORE MULTIPLE DEBUG POINTERS TO
+                        ;	PROGRAMMES CALLING DEBUG
+                        ;
+  EF20                  DEBUG_NAME:	BSS	10		;;NAME OF MODULE 8 CHARS LONG NULL TERMINATED
+  EF2A                  DEBUG_BUFFER:	BSS	20		;DEBUG TRACE LIST
+                        
+                        ;
+                        ;-- RAM BASED IO PARAMETER BLOCK - NOT USED WITH IDE
+                        ;
+  EF3E                  	EVEN
+  EF3E                  DISC_PARAM:	EQU	$ + 0
+  EF3E   0000           FDCSTATUS:	WORD	0	 	;OPERATION STATUS
+  EF40   0001           TIMEOUT:	WORD 	1		;N * 16MS DURATION
+  EF42   0000           DISC_INUSE:	WORD	0
+  EF44   0230           WPSTORE:	WORD	WORKSP
+                        
+  0008                  RAM_SIZE:	EQU	$ - DISC_PARAM
+                        
+                        ;	AORG	0400H
+                        ;	SETO	R9		;CLEAR SEGEMENT AND SELECT PAGE 0
+                        ;	LI	PORT,MEMBASE
+                        ;	LDCR	R9,BYTEWIDE		;GET PAGE VALUE FROM STEP ABOVE
+                        ;	BLWP	@INIT_MONITOR
+                        ;
+                        ;;-----TESTING CODE
+                        ;	AORG	0500H
+                        ;	BLWP	@TEMP
+                        ;TEMP:	WORD	WORKSP
+                        ;	WORD	INITIAL
+                        
+                        
+                        ;----- END TESTING CODE
+                        ;
+                        ; LOCATE THE MONITOR IN MEMORY
+                        ;
+  F000                  	AORG	MONORG
+                        ;
+                        ; INITIALISATION
+                        ;
+                        ;
+                        ;************************************************************************************
+                        ;
+                        ;	USE BLWP @MONITOR TO INITIALISE MONITOR VECTORS AND INTERRUPTS
+                        ;
+                        ;	NOTE ALL PROGRAMMES OR MODULES MUST SET THEIR WORSPACE
+                        ;	POINTERS AND STACKS BEFORE CALLING, e.g.
+                        ;
+                        ;	AORG 0500H
+                        ;	LWPI WORKSP
+                        ;	BLWP @INIT_MONITOR
+                        ;	<INITIALISED MONITOR WILL RETURN HERE>
+                        
+                        ;	ALL MONITOR CALLS MUST RETURN USING RET
+                        ;
+                        ;
+                        ;*************************************************************************************
+                        ;
+                        INIT_MONITOR:
+  F000   0230           	WORD	WORKSP		;THIS IS MONITOR WORKSAPCE
+  F002   F920           	WORD	INITIAL		;INITIALISE ALL XOP, INTERRUPT AND ENTRY VECTORS
+  F004   0230           	WORD	WORKSP
+  F006   F048           	WORD	BANNER		;ALLOW RETURN TO BANNER
+  F008   0460 F22A      BOOT_ADDR:	B	@MBOOT		;PERFORM A COLD BOOT - POS IN TABLE HELPS DEBUGGING
+  F00C   0460 F28E      	B	@MCIN		;CHAR IN
+  F010   0460 F292      	B	@MCOUT		;CHAR OUT
+  F014   0460 F29A      	B	@MSELDSK		;SELECT A DISK DRIVE
+  F018   0460 F2A0      	B	@MRECAL	 	;RECALIBRATE DRIVES
+  F01C   0460 F4C8      	B	@MSEEK		;SEEK THE TRACK IN R3
+  F020   0460 F2A4      	B	@MRDREC		;READ SELECTED SECTOR
+  F024   0460 F2B4      	B	@MWRREC	 	;WRITE SELECTED SECTOR
+  F028   0460 F2A2      	B	@MRDID		;READ TRACK ID ADDRESS
+  F02C   0460 F228      	B	@MWBOOT		;PERFORM A WARM BOOT
+  F030   0460 F2B0      	B	@MRDTRK		;READ A TRACK OF DATA
+  F034   0460 F2B2      	B	@MWRTRK		;WRITE A TRACK OF DATA
+  F038   0460 F2AA      	B	@MRDDBR		;READ A STANDARD DIRECTORY/BAT RECORD
+  F03C   0460 F2BA      	B	@MWRDBR		;WRITE A STANDARD DIRECTORY/BAT RECORD
+                        
+                        ;
+                        ;**********************************************************
+                        ;
+                        ;	DMA PARAMETER BLOCK DEFINITIONS
+                        ;	INDEXED DEPENDING ON READ(0), OR WRITE(1) COMMAND
+                        ;
+                        ;************************************************************
+                        ;
+  F040   34B8           CMDTBL:	STCR	*R8+,BYTEWIDE	;BYTE WIDE FDC DATA READ
+  F042   30B8           	LDCR	*R8+,BYTEWIDE	;BYTE WIDE FDC DATA WRITE
+                        ;
+                        ;--REGISTERS IN INTERRUPT 3 WORKSPACE
+                        ;
+  00E2                  DMACMD	SET	2*R9+INTWP2		;CURRENT COMMAND
+  00E0                  DMAADDR 	SET	2*R8+INTWP2		;REGISTER HOLDING SOURCE ADDRESS
+  00E8                  DMAPORT	SET	2*R12+INTWP2	;IO BASE REG I.E. DATAREG
+                        
+  F044   0D0A 00        CRLF	BYTE	0DH,0AH,0
+  F047   00             	EVEN
+                        ;
+                        ; BANK SWITCHING PORT
+                        ;
+  80C0                  MEMBASE:	EQU	80C0H		;BASE MEMORY BANK SWITCH PORT
+  0780                  LDS:	EQU	0780H	;        Long Distance Source instruction operand.
+  07C0                  LDD:	EQU	07C0H	;        Long Distance Destination instruction operand.
+                        
+                        ;LDS:	EQU	1000H	;  NOP      Long Distance Source instruction operand.
+                        ;LDD:	EQU	1000H	;   NOP     Long Distance Destination instruction operand.
+                        
+                        ;
+                        ;
+                        ;--PORTS ETC.
+                        ;
+  0000                  SELMUX:	EQU	0		;SELECT CONTROL PORT (R12 CRU PORT)
+                        ;TYPMUX:	EQU	SELMUX + 2*5	;START AT BIT 5
+  0002                  BYTEWIDE:	EQU	2		;PARALLEL I/O DONE IN BYTES (UNIQUE TO 99105)
+                        ;
+                        ;
+                        ; THESE ARE THE TIBUG BASIC COMMANDS, SUCH AS:
+                        ; QBOOT, ADDR G(O), ADDR O(UTPUT), W(ORKSPACE), R(EGISTERS), ADDRESS O(PEN).
+                        ;
+                        ; TIBUG WILL BE THE DEFAULT ENTRY POINT.
+                        ; BOOTING IS EFFECTED BY ISSUING THE Q(QBOOT) COMMAND
+                        ;
+                        ;TIBUG_ENTRY: AND WE CAN NOW ENABLE INTERRUPTS
+                        ;
+  F048   0300 0007      BANNER	LIMI	7		;ENABLE INTERRUPTS
+  F04C   2FA0 F104      	MESG	@MESS00		;_PRINT ">> TMS9900 TIBUG <<"
+  F050   02E0 0230      PROMPT	LWPI	WORKSP
+  F054   020A 0500      	LI	SP,STACKP
+  F058   2FA0 F122      	MESG	@MESS01		;PRINT PROMPTER
+  F05C   06A0 F146      	BL	@HEXIN		;OBTAIN ADDRESS IN R2 AND INSTRUCTION IN R1
+  F060   0204 0014      	LI	R4,20		;20 POSSIBLE INSTRUCTIONS
+  F064   9064 F0AE      MON01	CB	@INTAB(R4),R1		;SEARCH INTAB
+  F068   1305           	JEQ	MON03
+  F06A   0604           	DEC	R4
+  F06C   18FB           	JOC	MON01
+  F06E   2FA0 F126      MON02	MESG	@MESS02		;PRINT " ??"
+  F072   10EE           	JMP	PROMPT
+  F074   0A14           MON03	SLA	R4,1		;BRANCH TO APPROPRIATEE ROUTINE
+  F076   C124 F0C4      	MOV	@SUBTAB(R4),R4	;
+  F07A   C0C3           	MOV	R3,R3		;TEST HEXIN FLAG
+  F07C   0454           	B	*R4
+                        ;
+                        ;  TIBUG INSTRUCTION TABLE
+                        ;
+  F07E   3031 3233      HEXTAB	TEXT	'0123456789ABCDEF'
+  F082   3435 3637      
+  F086   3839 4142      
+  F08A   4344 4546      
+  F08E   3020 3120      NUMTAB	TEXT	'0 1 2 3 4 5 6 7 8 9 101112131415'
+  F092   3220 3320      
+  F096   3420 3520      
+  F09A   3620 3720      
+  F09E   3820 3920      
+  F0A2   3130 3131      
+  F0A6   3132 3133      
+  F0AA   3134 3135      
+  F0AE   1A             INTAB	BYTE	1AH		;CONTROL Z(CLEARS SCREEN) AND VERSION
+  F0AF   2F2F 5155      	TEXT	'//QUVGMZOWRPXLHST/. '
+  F0B3   5647 4D5A      
+  F0B7   4F57 5250      
+  F0BB   584C 4853      
+  F0BF   542F 2E20      
+  F0C3   00             	EVEN
+  F0C4   F048 0000      SUBTAB	WORD	BANNER,0,0,QBOOT,HEXLOAD,HEXLOAD2,GO,MOVE,FIND,OUTPUT,WP,PRINT_REGS,PRINT
+  F0C8   0000 F73E      
+  F0CC   F83E F882      
+  F0D0   F742 F0FA      
+  F0D4   F0FC F7CE      
+  F0D8   F80E F746      
+  F0DC   F102           
+  F0DE   F0FE F100      	WORD	XCUTE,LOWW,SETBP,SSTEP,TRACE,CHAR,SWITCH_SEG,OPEN
+  F0E2   F0F4 F0F2      
+  F0E6   F0F6 F0F8      
+  F0EA   F826 F790      
+                        
+                        
+                        	;
+                        	; COMMANDS IMPLEMENTED IN DISC_MONITOR
+                        	; REGIST, OPEN, GO AND QBOOT.
+                        	;
+                        ;MASK32	WORD	001FH
+  F0EE   000F           MASK15	WORD	000FH
+                        ;MASK8	WORD	0007H
+  F0F0   0003           MASK3	WORD	0003H
+                        ;
+                        ; DUMMY LIST
+                        ;
+  F0F2   10AE           SSTEP:	JMP	PROMPT;   NULL COMMAND
+  F0F4   10AD           SETBP:	JMP	PROMPT;   NULL COMMAND
+  F0F6   10AC           TRACE:	JMP	PROMPT;   NULL COMMAND
+  F0F8   10AB           CHAR:	JMP	PROMPT;   NULL COMMAND
+  F0FA   10AA           MOVE:	JMP	PROMPT;   NULL COMMAND
+  F0FC   10A9           FIND:	JMP	PROMPT;   NULL COMMAND
+  F0FE   10A8           XCUTE:	JMP	PROMPT;   NULL COMMAND
+  F100   10A7           LOWW:	JMP	PROMPT;   NULL COMMAND
+                        ;INSTANT:	JMP	PROMPT;   NULL COMMAND
+  F102   10A6           PRINT:	JMP	PROMPT;   NULL COMMAND
+                        ;
+                        ;ONLY THESE ONES HAVE BEEN IMPLEMENT WITHIN THE DISC_MONITOR ROM.  AS
+                        ;THE ADDRESS SPACE HAS BEEN TAKEN UP WITH THE DISC-IO AND THE OTHER FUNCTIONS
+                        ;CAN BE EASILY IMPLEMENTED WITH DISC BASED PROGRAMMES.
+                        ;
+                        ;QBOOT:	JMP	PROMPT;   NULL COMMAND
+                        ;GO:	JMP	PROMPT;   NULL COMMAND
+                        ;OUTPUT:	JMP	PROMPT;   NULL COMMAND
+                        ;WP:	JMP	PROMPT;   NULL COMMAND
+                        ;PRINT_REGS: JMP	PROMPT;   NULL COMMAND
+                        ;OPEN:	JMP	PROMPT;   NULL COMMAND
+                        ;
+                        ; MESSGES AND OTHER EQUATES
+                        ;
+  F104   0D0A           MESS00	BYTE	CR,LF
+  F106   3C54 4D53      	TEXT	'<TMS9900 DISC MONITOR V4.9F>'
+  F10A   3939 3030      
+  F10E   2044 4953      
+  F112   4320 4D4F      
+  F116   4E49 544F      
+  F11A   5220 5634      
+  F11E   2E39 463E      
+  F122   0D0A           MESS01	BYTE	CR,LF
+  F124   3E             	TEXT	'>'
+  F125   00             	BYTE	0
+  F126   3F3F           MESS02	TEXT	'??'
+  F128   00             	BYTE	0
+  F129   0A0D 0A        MESS03	BYTE	LF,CR,LF
+  F12C   2020 2020      	TEXT	'    '
+  F130   00             	BYTE	0
+  F131   203D 20        MESS04	TEXT	' = '
+  F134   00             	BYTE	0
+                        
+  F135   4472 6976      MESS05	TEXT	'Drive not ready.'
+  F139   6520 6E6F      
+  F13D   7420 7265      
+  F141   6164 792E      
+  F145   00             	BYTE	0
+  F146                  	EVEN
+                        ;
+  000D                  CR:	EQU	0DH		;CARRIAGE RETURN
+  000A                  LF:	EQU	0AH		;LINE FEED
+                        
+                        ;
+                        ;*********************************
+                        ; SUPPORT ROUTINES FOR INPUT AND OUTPUT
+                        ;**********************************
+                        ;
+                        ;
+                        ; SUBROUTINE HEXIN
+                        ; INPUTS A HEX NO. INTO R2
+                        ; AND INSTRUCTION INTO R1
+                        ; (INSTRUCTION ' ' INSERT AND MOVE TO NEXT ADDRESS
+                        ; (INSTRUCTION '-' INSERT AND MOVE TO PREVIOUS ADDRESS
+                        ; THE HEX INDEX USES THE TRANSLATE TABLE HEXTAB TO IDENTIFY THE HEX DIGIT.
+                        ; THE LAST CHARACTER, EITHER SPACE OR - BREAKS THE CYCLE AS THEY ARE NOT IN THE HEXTABLE
+                        ;
+                        ; USES R1,R2,R3,R4
+                        ;
+  F146   04C1           HEXIN:	CLR	R1
+  F148   04C2           	CLR	R2
+  F14A   0703           	SETO	R3		;SET FLAG
+  F14C   2F41           HEXIN0	READ	R1		;GET CHARACTER
+  F14E   2F01           	WRITE	R1		;PRINT CHARACTER
+  F150   0204 000F      	LI	R4,15
+  F154   9064 F07E      HEXIN1	CB	@HEXTAB(R4),R1
+  F158   1604           	JNE	HEXIN2
+  F15A   04C3           	CLR	R3		;CLEARS FLAG
+  F15C   0A42           	SLA	R2,4		;SHIFTS HEX DIGIT INTO R2
+  F15E   E084           	SOC	R4,R2
+  F160   10F5           	JMP	HEXIN0
+  F162   0604           HEXIN2	DEC	R4
+  F164   18F7           	JOC	HEXIN1		;SUBTRACTING 1 FROM 0 DOES NOT RESULT IN CARRY
+  F166   C0C3           	MOV	R3,R3		;TEST HEXIN FLAG
+  F168   045B           	RT			;RETURN FROM BL
+                        ;
+                        ; SUBROUTINE HEXOUT			;OUTPUT CONTENTS OF R2
+                        ; USES R0,R1,R2,R3
+                        ;
+                        ;HEXOUT	WRITE	@MESS03+7		;PRINTS " "
+                        ;HEXOUT0	PUSHREG	R3		;SAVE R0-R3
+                        ;HEXOUTX	CLR	R0
+                        ;	LI	R3,4
+                        ;HEXOUT1	SRC	R2,12
+                        ;	MOV	R2,R1
+                        ;	ANDI	R1,000FH
+                        ;	MOVB	@HEXTAB(R1),R0
+                        ;	WRITE	R0
+                        ;	DEC	R3
+                        ;	JNE	HEXOUT1
+                        ;	POPREG	R3		;RESTORE R3-R0
+                        ;	RT
+                        ;
+  F16A   2E00           DOT:	BYTE	'.',0
+  F16C   2B00           PLUS	BYTE	'+',0
+  F16E   4C4F 4144      LOADERR:	TEXT	'LOAD ERROR'
+  F172   2045 5252      
+  F176   4F52           
+  F178   00             	BYTE	0
+  F179   00             	EVEN
+                        ;
+                        ;**********************************************
+                        ;  XOP WP ENTRY POINTS
+                        ;**********************************************
+                        ;
+  F17A   0130 F522      XOPTAB:	WORD	XOPWP0,XOP0,XOPWP1,XOP1,XOPWP2,XOP2,XOPWP3,XOP3
+  F17E   0140 F536      
+  F182   0150 F552      
+  F186   0160 F564      
+  F18A   0170 F58C      	WORD	XOPWP4,XOP4,XOPWP5,XOP5,XOPWP6,XOP6,XOPWP7,XOP7,XOPWP8,XOP8
+  F18E   0180 F5A0      
+  F192   0190 F5B2      
+  F196   01A0 F5C2      
+  F19A   01B0 F5CE      
+  F19E   01C0 F5DC      	WORD	XOPWP9,XOP9,XOPWP10,XOP10,XOPWP11,XOP11
+  F1A2   01D0 F5E8      
+  F1A6   01E0 F60C      
+  F1AA   01F0 F63C      	WORD	XOPWP12,XOP12,XOPWP13,XOP13,XOPWP14,XOP14,XOPWP15,XOP15
+  F1AE   0200 F64C      
+  F1B2   0210 F65C      
+  F1B6   0220 F668      
+                        ;
+  F1BA   0230 F920      INTTAB:	WORD	WORKSP,INITIAL,INTWP1,INT1,INTWP2,INT2, INTWP3,INT3	;FDC1797 INTERUPT VECTORS
+  F1BE   00C0 F1DA      
+  F1C2   00D0 F4CE      
+  F1C6   00E0 F4D0      
+  F1CA   00F0 F4D2      	WORD	INTWP4,INTTIMER,INTWP5,IDE_IRQ, INTWP6, IDE_DMARQ, INTWP7,INT7 	;TIMER INTERRUPT
+  F1CE   0100 F2E0      
+  F1D2   0110 F2E8      
+  F1D6   0120 F1E2      
+                        ;
+  F1DA   0200 0001      INT1:	LI	R0,1
+  F1DE   2E80           	WHEX	R0
+  F1E0   0380           	RTWP
+                        
+  F1E2   0200 0007      INT7:	LI	R0,7
+  F1E6   2E80           	WHEX	R0
+  F1E8   0380           	RTWP
+                        ;
+                        ;	NOTE.  APPLICATIONS MUST CALL WITH THEIR WP POINTERS SET
+                        ;	THIS CALL IS USED TO SET UP MONITOR AND IS CALLED USING BL
+                        ;	CALLED USING BLWP @MONITOR
+                        ;
+  F1EA   0360           INIT_VECTORS:	RSET			;CLEAR INTERRUPT MASK
+                        ;	LWPI	WORKSP		;USE MONITOR LOCAL WORKSPACE
+                        ;	LI	SP,STACKP		;STACK FOR LOCAL MONITOR USE
+                        ;
+                        ;	LI	R0,MON_PTR		;SET UP THE MONITOR POINTER
+                        ;	LI	R1,MONORG
+                        ;	MOV	*R1+,*R0+		;MOVE WORKSPACE POINTER
+                        ;	MOV	*R1+,*R0+		;MOVE MONITOR INITIALISATION ADDRESS
+                        ;
+                        ;************************************************************
+                        ;
+                        ;	SWTICH TO MONITOR XOP VECTORS RATHER THAN TIMON ROM
+                        ;	THIS MEANS THAT ALL PROGRAMMES THAT USE XOP WILL USE THE
+                        ;	THE XOP IMPLEMENTATIONS DEFINED IN MONITOR THAT IS HERE!
+                        ;
+                        ;************************************************************
+                        
+  F1EC   0202 0000      	LI	R2,INTVEC		;SET UP INTERRUPT VECTORS
+  F1F0   0201 F1BA      	LI	R1,INTTAB		;ONLY INT 0 TO 7
+  F1F4   CCB1           INIT1:	MOV	*R1+,*R2+
+  F1F6   CCB1           	MOV	*R1+,*R2+
+  F1F8   0282 0020      	CI	R2,INTVEC+8*4		;8 INTERRUPT VECTORS
+  F1FC   16FB           	JNE	INIT1
+                        ;
+                        ;ZERO UNUSED INTERRUPT WORDS AND OTHER INITIALISATION AREAS UP TO TPA
+                        ;
+                        	;LI	R0,INTWP0
+                        	;LI	R1,TPA
+                        INIT2:	;CLR	*R0+
+                        	;C	R0,R1
+                        	;JNE	INIT2
+                        ;
+                        ;INITIALISE XOP-START AT XOP0, INTO MEMORY LOCATION AT 40H
+                        ;
+  F1FE   0202 0040      	LI	R2,XOPVEC
+  F202   0201 F17A      	LI	R1,XOPTAB
+  F206   CCB1           INIT3:	MOV	*R1+,*R2+
+  F208   CCB1           	MOV	*R1+,*R2+
+  F20A   0282 0080      	CI	R2,80H		;FINISHED?
+  F20E   16FB           	JNE	INIT3		;NO
+                        ;
+                        ;Now initialise DISC and OTHER RAM.  FIRST ZERO THEN COMPY PRESETS
+                        ;
+  F210   0200 0008      	LI	R0,RAM_SIZE
+  F214   0201 EF3E      	LI	R1,DISC_PARAM
+  F218   04C2           	CLR	R2
+  F21A   DC42           INIT_RAM	MOVB	R2,*R1+
+  F21C   0600           	DEC	R0
+  F21E   16FD           	JNE	INIT_RAM
+                        ;
+                        ; NOW MOVE PRESETS
+                        ;
+  F220   0700           	SETO	R0
+  F222   05A0 EF40      	INC	@TIMEOUT		;THIS JUST SETS TIMEOUT TO 1 AS IT IS ALREAY 0
+  F226   045B           	RT
+                        ;
+                        ;************************************************************
+                        ;
+                        ;	WARM BOOT ASSUMES A COLD BOOT HAS ALREADY OCCURED
+                        ;	AND DISC IS JUST BEING CALIBRATED TO A KNOWN STATE
+                        ;
+                        ;************************************************************
+                        ;
+  F228   1000           MWBOOT:	JMP	MBOOT
+                        ;
+                        ;*********************************************************
+                        ;
+                        ;	BOOT ASSUMES MONITOR HAS BEEN INITIALISED AND SO
+                        ;	THE FDC AND INTERRUPT VECTORS ARE IN VALID
+                        ;
+                        ;***********************************************************
+                        ;
+  F22A   06A0 F98E      MBOOT:	BL	@SETSEGMENT
+  F22E   2FA0 F276      	MESG	@BMSG2
+  F232   04C2           	CLR	R2
+  F234   06A0 F2C0      	BL	@IDE_READY
+                        ;
+                        ;BOOT SECTOR IS LBA = 0
+                        ;
+  F238   04C3           	CLR	R3		;BOOT LBA SECTOR
+  F23A   0204 ED00      	LI	R4,BUFFER		;USE THIS AREA TO BOOT
+  F23E   06A0 F330      	BL	@READ_SECTOR
+  F242   160B           	JNE	BOOT2
+                        ;
+                        ; GET THE LOAD ADDRESS WHICH IS LOCATED AT THE LAST 2 BYTES OF THE LOADER BUFFER
+                        ;
+  F244   C120 EEFE      	MOV	@BUFFER+510,R4
+  F248   C004           	MOV	R4,R0
+  F24A   0201 ED00      	LI	R1,BUFFER
+  F24E   0202 0200      	LI	R2,512
+  F252   CD31           BOOT1	MOV	*R1+,*R4+
+  F254   0642           	DECT	R2
+  F256   16FD           	JNE	BOOT1
+  F258   0450           	B	*R0		;LET THERE BE LIFE - LOAD THE SYSTEM
+                        ;
+                        ; --BOOT ERROR
+                        ;
+  F25A   C801 EF3E      BOOT2	MOV	R1,@FDCSTATUS
+  F25E   2FA0 F266      	MESG	@BMSG1
+  F262   0460 F050      	B	@PROMPT
+                        ;
+  F266   2D2D 426F      BMSG1	TEXT	'--Boot error'
+  F26A   6F74 2065      
+  F26E   7272 6F72      
+  F272   0D0A 00        	BYTE	0DH,0AH,0
+  F275   00             	EVEN
+  F276   2D2D 426F      BMSG2	TEXT	'--Booting....'
+  F27A   6F74 696E      
+  F27E   672E 2E2E      
+  F282   2E             
+  F283   0D0A 00        	BYTE	0DH,0AH,0
+  F286   5041 4745      PAGE	TEXT	"PAGE: "
+  F28A   3A20           
+  F28C   00             	BYTE	0
+  F28D   00             	EVEN
+                        
+                        ;
+                        ;****************************
+                        ;
+                        ; CHAR IN (MSB	OF R1)
+                        ;
+                        ;*****************************
+  F28E   2F41           MCIN:	READ	R1	 	;GET CHAR
+  F290   2DC0           	RET
+                        ;*******************************
+                        ;
+                        ;	CHAR OUT (MSB OF R2)
+                        ;
+                        ;********************************
+                        ;
+  F292   04C1           MCOUT:	CLR	R1
+  F294   D042           	MOVB	R2,R1	 	;COPY CHAR TO R1
+  F296   2F01           	WRITE	R1	 	;OUTPUT IT
+  F298   2DC0           	RET
+                        ;
+                        ;************************************************
+                        ;
+                        ;	SELECT THE DRIVE IN R2
+                        ;
+                        ;************************************************
+                        ;
+  F29A   06A0 F2C0      MSELDSK:	BL	@IDE_READY
+  F29E   2DC0           	RET			;EXTERNAL RETURN
+                        ;
+                        ;*****************************
+                        ;
+                        ;--RECAL IS JUST SEEK TO TRK ZERO (RECAL IS HANDLED THERE)
+                        ;
+                        ;*****************************
+                        ;
+  F2A0   2DC0           MRECAL:	RET
+                        
+                        ;*******************************
+                        ;
+                        ;READ ID FIELDS
+                        ;
+                        ;******************************
+                        ;
+  F2A2   2DC0           MRDID:	RET
+                        
+                        ;****************************
+                        ;
+                        ;READ A RECORD
+                        ; 	R3 HOLDS LBA
+                        ;	R4 HOLDS BUFFER POINTER
+                        ; FOR THESE COMPLEX INTERNAL FUNCTIONS WE USE BLWP SO WE CAN USE ANOTHER
+                        ; WORKSPACE THEREBY GIVING THE CALLING
+                        ; ROUTINE MORE FLEXIBILITY
+                        ;
+                        ;*****************************
+                        ;
+                        	;WORD	0250H
+                        	;WORD	READ_SECTOR
+                        MRDREC:	;BLWP	@MRDREC-4
+  F2A4   06A0 F330      	BL	@READ_SECTOR
+  F2A8   2DC0           	RET
+                        
+                        ;****************************
+                        ;
+                        ;READ A DIRECTORY/BAT RECORD
+                        ; 	R3 HOLDS LBA
+                        ;	R4 HOLDS BUFFER POINTER
+                        ;
+                        ;*****************************
+                        ;
+                        	;WORD	WORKSP2		;0250H
+                        	;WORD	READ_DBR
+                        MRDDBR:	;BLWP	@MRDDBR-4
+  F2AA   06A0 F362      	BL	@READ_DBR
+  F2AE   2DC0           	RET
+                        ;****************************
+                        ;
+                        ;READ A TRACK
+                        ; 	R3 NOT REQUIRED
+                        ;	R4 HOLDS BUFFER POINTER
+                        ;
+                        ;*****************************
+                        ;
+  F2B0   2DC0           MRDTRK:	RET
+                        ;
+                        ;
+                        ;****************************
+                        ;
+                        ;WRITE A TRACK
+                        ; 	R3 NOT REQUIRED
+                        ;	R4 HOLDS BUFFER POINTER
+                        ;
+                        ;*****************************
+                        ;
+  F2B2   2DC0           MWRTRK:	RET
+                        
+                        ;******************************
+                        ;
+                        ;WRITE A RECORD
+                        ; 	R3 HOLDS SECTOR/LBA
+                        ;	R4 HOLDS BUFFER POINTER
+                        ;
+                        ;*****************************
+                        ;
+                        	;WORD	WORKSP2		;0250H
+                        	;WORD	WRITE_SECTOR
+                        MWRREC:	;BLWP	@MWRREC-4
+  F2B4   06A0 F394      	BL	@WRITE_SECTOR
+  F2B8   2DC0           	RET
+                        ;
+                        ;WRITE A DIRECTORY/BAT RECORD
+                        ; 	R3 HOLDS SECTOR/LBA
+                        ;	R4 HOLDS BUFFER POINTER
+                        ;
+                        ;*****************************
+                        ;
+                        	;WORD	WORKSP2		;0250H
+                        	;WORD	WRITE_DBR
+  F2BA   06A0 F3BA      MWRDBR:	BL	@WRITE_DBR
+                        	;BLWP	@MWRDBR-4
+  F2BE   2DC0           	RET
+                        ;
+                        ;
+                        ;=========START OF IDE INTERFACE ROUTINES====================
+                        ;
+                        ;
+                        ; IDE REGISTERS - REFERENCE SEE THE SEAGATE REFERENCE MANUAL
+                        ;
+                        ; IDE I/O ports
+  8040                  IDE_BASE_PORT:	EQU	8040H	;PARALLEL OUTPUT ADDRESS WITH MSB SET THIS IS CS0
+                        
+  804E                  IDE_COMMAND:	EQU	IDE_BASE_PORT + 7*2
+  804E                  IDE_STATUS:	EQU	IDE_BASE_PORT + 7*2
+  804C                  IDE_CONTROL:	EQU	IDE_BASE_PORT + 6*2
+  8040                  IDE_DATA:	EQU	IDE_BASE_PORT
+  804C                  IDE_HEAD:	EQU	IDE_BASE_PORT + 6*2
+  8048                  IDE_CYL_LSB:	EQU	IDE_BASE_PORT + 4*2
+  804A                  IDE_CYL_MSB:	EQU	IDE_BASE_PORT + 5*2
+  8046                  IDE_SECTOR:	EQU	IDE_BASE_PORT + 3*2
+  8044                  IDE_SEC_CNT:	EQU	IDE_BASE_PORT + 2*2
+  8042                  IDE_ERROR:	EQU	IDE_BASE_PORT + 1*2
+                        ;
+                        ; IDE STATUS REGISTER AND BIT DEFINTIONS
+                        ;
+                        ;; IDE Status Register:
+                        ;  bit 7: Busy	1=busy, 0=not busy
+                        ;  bit 6: Ready 1=ready for command, 0=not ready yet
+                        ;  bit 5: DF	1=fault occured inside drive
+                        ;  bit 4: DSC	1=seek complete
+                        ;  bit 3: DRQ	1=data request ready, 0=not ready to xfer yet
+                        ;  bit 2: CORR	1=correctable error occured
+                        ;  bit 1: IDX	vendor specific
+                        ;  bit 0: ERR	1=error occured
+                        ;
+  0080                  IDE_BSY:	EQU	10000000B		;80H
+  0040                  IDE_DRDY:	EQU	01000000B		;40H
+  0001                  IDE_ERR:	EQU	00000001B		;01H
+  0020                  IDE_DWF:	EQU	00100000B		;20H  DRIVE WRITE FAULT
+  0010                  IDE_DSC:	EQU	00010000B		;01H  DRIVE SEEK COMPLETE
+  0008                  IDE_DRQ:	EQU	00001000B		;01H  DATA REQUEST BIT
+                        ;
+                        ; IDE COMMANDS - NOTE COMMAND IS IN THE MOST SIGNIFICANT BYTE
+                        ;
+  2000                  IDE_CMD_READ:	EQU	02000H
+  3000                  IDE_CMD_WRITE:	EQU	03000H	;R = 0 FOR NO RETRY
+  1000                  IDE_CMD_RECAL:	EQU	01000H	;R = 0 FOR NO RETRY
+  9100                  IDE_CMD_INIT:	EQU	09100H
+  EC00                  IDE_CMD_ID:	EQU	0EC00H	;GET THE DRIVE PROPERTIES
+  E000                  IDE_CMD_SDOWN:	EQU	0E000H	;R = 0 FOR NO RETRY
+  E100                  IDE_CMD_SUP:	EQU	0E100H	;R = 0 FOR NO RETRY
+                        
+  0200                  BYTSEC:	EQU	512
+                        ;
+                        ; CHECK THE IDE READY BIT.  JUST USE REGISTERS 0 AND 1
+                        ;
+                        IDE_READY:	;LI	PORT, IDE_HEAD		;DEVICE HEAD REGISTER
+                        	;LI	R1, 11100000B*256	;SPECIFY LBA MODE
+                        	;LDCR	R1,BYTEWIDE		;WRITE THE COMMAND
+  F2C0   0700           	SETO	R0		;SET TIMEOUT
+                        
+  F2C2   020C 804E      WAITRDY:	LI	PORT,IDE_STATUS		;STATUS
+  F2C6   3481           BSY1:	STCR	R1,BYTEWIDE		;GET STATUS REGISTER
+  F2C8   0241 C000      	ANDI	R1,11000000B * 256	;ISOLATE BSY AND DRDY
+  F2CC   0281 4000      	CI	R1,01000000B * 256	;EXPECT BSY = 0, DRDY = 1
+  F2D0   1305           	JEQ	READY
+                        	;
+                        	;TEST TIMEOUT
+                        	;
+  F2D2   0600           	DEC	R0
+  F2D4   16F8           	JNE	BSY1
+  F2D6   0201 0001      	LI	R1,1		;TIMEOUT ERROR
+  F2DA   045B           	RT
+                        
+  F2DC   04C1           READY:	CLR	R1
+  F2DE   045B           	RT
+                        
+                        ;
+                        ; TEMPORARY INTERRUPT HANDLERS
+                        ;
+  F2E0   020C 804E      IDE_IRQ:	LI	PORT,IDE_STATUS		;STATUS
+  F2E4   3480           	STCR	R0,BYTEWIDE
+  F2E6   0380           	RTWP
+                        ;
+                        ; TEMPORARY INTERRUPT HANDLERS
+                        ;
+  F2E8   020C 804E      IDE_DMARQ:	LI	PORT,IDE_STATUS		;STATUS
+  F2EC   3480           	STCR	R0,BYTEWIDE
+  F2EE   0380           	RTWP
+                        
+                        ;
+                        ; CALL THE DRIVE ID.  THIS IS NOT OF MUCH PRACTICAL USE, BUT A GOOD TEST.
+                        ;
+  F2F0   06A0 F2C0      DRIVE_ID:	BL	@IDE_READY
+  F2F4   020C 804E      	LI	PORT, IDE_COMMAND	;COMMAND REGISTER6
+  F2F8   0201 EC00      	LI	R1, IDE_CMD_ID		; READ BUFFER
+  F2FC   3081           	LDCR	R1,BYTEWIDE
+  F2FE   06A0 F3EE      	BL	@IDE_WAIT_DRQ
+  F302   1303           	JEQ	IDE_GET_ERROR
+  F304   06A0 F404      	BL	@IDE_READ_DATA
+  F308   045B           	RT
+                        ;
+                        ;when an error occurs, we get acc.0 set from a call to ide_drq
+                        ;or ide_wait_not_busy (which read the drive's status register).  If
+                        ;that error bit is set, we should jump here to read the drive's
+                        ;explaination of the error, to be returned to the user.  If for
+                        ;some reason the error code is zero (shouldn't happen), we'll
+                        ;return 255, so that the main program can always depend on a
+                        ;return of zero to indicate success.
+                        ;
+  F30A   020C 8042      IDE_GET_ERROR:	LI	PORT, IDE_ERROR
+  F30E   04C1           	CLR	R1
+  F310   3481           	STCR	R1,BYTEWIDE
+  F312   D041           	MOVB	R1,R1
+  F314   1303           	JEQ	IGE_X		;RETURN ERROR IN MSB OF R1
+  F316   2FA0 F31E      	MESG	@IDE_MSG1
+  F31A   2E81           	WHEX	R1
+  F31C   045B           IGE_X	RT
+                        
+  F31E   4944 4520      IDE_MSG1:	TEXT	"IDE ERROR: "
+  F322   4552 524F      
+  F326   523A 20        
+  F329   000D 000A      	WORD	0DH,0AH,0
+  F32D   0000           
+  F32F   00             	EVEN
+                        ;
+                        ;
+                        ; READ_SECTOR
+                        ;	R3 HOLDS THE LSB OF THE LBA VALUE FOR THE SECTOR WE WANT TO READ
+                        ;	R4 HOLDS THE BUFFER ADDRESS
+                        ;
+                        ; NOTE:  SP IS THE CURRENT PROGRAMME RELATIVE SP (SEGMENT 0)
+                        ; FOR THESE INTERNAL FUNCTIONS WE USE BLWP SO WE CAN USE ANOTHER WORKSPACE THEREBY GIVING THE CALLING
+                        ; ROUTINE MORE FLEXIBILITY
+                        ;
+                        ;
+                        ;
+  F330   064A           READ_SECTOR:	DECT	SP
+  F332   C68B           	MOV	R11,*SP		;PUSH BL RETURN ADDRESS
+  F334   04C2           	CLR	R2
+  F336   06A0 F2C0      	BL	@IDE_READY
+  F33A   C143           	MOV	R3,R5		;SAVE THE LBA
+  F33C   06A0 F3E0      	BL	@IDE_NOT_BUSY
+  F340   06A0 F45C      	BL	@IDE_WR_LBA
+  F344   020C 804E      	LI	PORT, IDE_COMMAND	;COMMAND REGISTER6
+  F348   0201 2000      	LI	R1, IDE_CMD_READ	; READ BUFFER
+  F34C   3081           	LDCR	R1,BYTEWIDE
+  F34E   06A0 F3EE      	BL	@IDE_WAIT_DRQ
+  F352   1602           	JNE	RD0
+  F354   C2FA           	MOV	*SP+,R11		;POP BL RETURN ADDRESS
+  F356   10D9           	JMP	IDE_GET_ERROR
+  F358   06A0 F404      RD0	BL	@IDE_READ_DATA
+  F35C   C2FA           	MOV	*SP+,R11		;POP BL RETURN ADDRESS
+  F35E   C041           	MOV	R1,R1		;SET STATUS
+  F360   045B           	RT			;EXTERNAL CALL RETURN
+                        
+                        
+                        
+                        ;
+                        ;  READ THE DIRECTORY AND BAT RECORDS
+                        ;  R3 HOLDS THE LSB OF THE LBA VALUE FOR THE SECTOR WE WANT TO READ
+                        ;  R4 HOLDS THE BUFFER ADDRESS
+                        ;
+                        
+  F362   064A           READ_DBR:	DECT	SP
+  F364   C68B           	MOV	R11,*SP		;PUSH BL RETURN ADDRESS
+  F366   04C2           	CLR	R2
+  F368   06A0 F2C0      	BL	@IDE_READY
+  F36C   C143           	MOV	R3,R5		;SAVE THE LBA
+  F36E   06A0 F3E0      	BL	@IDE_NOT_BUSY
+  F372   06A0 F45C      	BL	@IDE_WR_LBA
+                        
+  F376   020C 804E      	LI	PORT, IDE_COMMAND	;COMMAND REGISTER6
+  F37A   0201 2000      	LI	R1, IDE_CMD_READ	; READ BUFFER
+  F37E   3081           	LDCR	R1,BYTEWIDE
+  F380   06A0 F3EE      	BL	@IDE_WAIT_DRQ
+  F384   1602           	JNE	RD1
+  F386   C2FA           	MOV	*SP+,R11
+  F388   10C0           	JMP	IDE_GET_ERROR
+  F38A   06A0 F41C      RD1	BL	@IDE_READ_DBR		;USES R0,R1, R4
+  F38E   C2FA           	MOV	*SP+,R11		;POP BL RETURN ADDRESS
+  F390   C041           	MOV	R1,R1
+  F392   045B           	RT			;INTERNAL BLWP RETURN
+                        ;
+                        ; 	WRITE SECTOR
+                        ;	R3 HOLDS THE LSB OF THE LBA VALUE FOR THE SECTOR WE WANT TO READ
+                        ;	R4 HOLDS THE BUFFER ADDRESS
+                        ;
+                        ;
+                        
+                        ;
+                        ; 	WRITE SECTOR
+                        ;	R3 HOLDS THE LSB OF THE LBA VALUE FOR THE SECTOR WE WANT TO READ
+                        ;	R4 HOLDS THE BUFFER ADDRESS
+                        ;
+                        ;
+  F394   064A           WRITE_SECTOR:	DECT	SP
+  F396   C68B           	MOV	R11,*SP		;PUSH BL RETURN ADDRESS
+  F398   C143           	MOV	R3,R5
+  F39A   06A0 F3E0      	BL	@IDE_NOT_BUSY
+  F39E   06A0 F45C      	BL	@IDE_WR_LBA
+  F3A2   020C 804E      	LI	PORT, IDE_COMMAND	;COMMAND REGISTER6
+  F3A6   0201 3000      	LI	R1, IDE_CMD_WRITE	; WRITE BUFFER
+  F3AA   3081           	LDCR	R1,BYTEWIDE
+  F3AC   06A0 F3EE      	BL	@IDE_WAIT_DRQ
+  F3B0   06A0 F430      	BL	@IDE_WRITE_DATA
+  F3B4   C2FA           	MOV	*SP+,R11		;POP BL RETURN ADDRESS
+  F3B6   C041           	MOV	R1,R1		;SET STATUS
+  F3B8   045B           	RT
+                        
+                        
+  F3BA   064A           WRITE_DBR:	DECT	SP
+  F3BC   C68B           	MOV	R11,*SP		;PUSH BL RETURN ADDRESS
+  F3BE   C143           	MOV	R3,R5
+  F3C0   06A0 F3E0      	BL	@IDE_NOT_BUSY
+  F3C4   06A0 F45C      	BL	@IDE_WR_LBA
+  F3C8   020C 804E      	LI	PORT, IDE_COMMAND	;COMMAND REGISTER6
+  F3CC   0201 3000      	LI	R1, IDE_CMD_WRITE	; WRITE BUFFER
+  F3D0   3081           	LDCR	R1,BYTEWIDE
+  F3D2   06A0 F3EE      	BL	@IDE_WAIT_DRQ
+  F3D6   06A0 F448      	BL	@IDE_WRITE_DBR
+  F3DA   C2FA           	MOV	*SP+,R11		;POP BL RETURN ADDRESS
+  F3DC   C041           	MOV	R1,R1		;SET STATUS
+  F3DE   045B           	RT
+                        
+                        
+                        ; WAIT FOR THE IDE DRIVE TO NOT BE BUSY
+                        ;
+  F3E0   020C 804E      IDE_NOT_BUSY:	LI	PORT,IDE_COMMAND	;STATUS
+  F3E4   3481           BSY2	STCR	R1,BYTEWIDE			;GET STATUS REGISTER
+  F3E6   0241 8000      	ANDI	R1,10000000B * 256		;IF BUSY, THEN WAIT
+  F3EA   16FC           	JNE	BSY2
+  F3EC   045B           	RT
+                        ;
+                        ; WAIT FOR DRQ BEFORE READ DATA.  0 STATUS, ERROR
+                        ;
+  F3EE   0700           IDE_WAIT_DRQ:	SETO	R0		;VERY CRUDE TIMEOUT
+  F3F0   020C 804E      	LI	PORT,IDE_COMMAND
+  F3F4   04C1           	CLR	R1
+  F3F6   0600           DRQ1	DEC	R0
+  F3F8   1304           	JEQ	DRQ_X
+  F3FA   3481           	STCR	R1,BYTEWIDE
+  F3FC   0241 0800      	ANDI	R1,00001000B * 256	;WAUT FOR DRQ  READT, THEN WAIT
+  F400   13FA           	JEQ	DRQ1
+  F402   045B           DRQ_X	RT
+                        ;
+                        ; IDE Status Register:
+                        ; bit 7: Busy 1=busy, 0=not busy
+                        ;  bit 6: Ready 1=ready for command, 0=not ready yet
+                        ; bit 5: DF 1=fault occured inside drive
+                        ; bit 4: DSC 1=seek complete
+                        ; bit 3: DRQ 1=data request ready, 0=not ready to xfer yet
+                        ; bit 2: CORR 1=correctable error occured
+                        ; bit 1: IDX vendor specific
+                        ; bit 0: ERR 1=error occured
+                        ;;------------------------------------------------------------------
+                        ;
+                        ; BECAUSE IDE TRANSFERS ARE IN 16 BIT WORDS AND WE ONLY HAVE ACCESS TO 8 BIT
+                        ; TRANSFERS, 256 BYTES REPRESENTS AN LBA AND TWO LBA A SECTOR.  SO TWO LBAS ARE READ
+                        ;
+                        ; WE ENTER WITH R4 -> BUFFER
+                        ;
+  F404   2C00           IDE_READ_DATA:	FAR_REF
+  F406   0200 0200      	LI	R0,BYTSEC
+  F40A   020C 8040      	LI	PORT,IDE_DATA	 	;DATA REG
+  F40E   3481           RL11:	STCR	R1,BYTEWIDE		;
+  F410   07C0           	LDD
+  F412   DD01           	MOVB	R1,*R4+
+  F414   0600           	DEC	R0
+  F416   16FB           	JNE	RL11
+  F418   C040           	MOV	R0,R1
+  F41A   045B           	RT
+                        
+  F41C   0200 0200      IDE_READ_DBR:	LI	R0,BYTSEC
+  F420   020C 8040      	LI	PORT,IDE_DATA	 	;DATA REG
+  F424   3481           RL12:	STCR	R1,BYTEWIDE		;
+  F426   DD01           	MOVB	R1,*R4+
+  F428   0600           	DEC	R0
+  F42A   16FC           	JNE	RL12
+  F42C   C040           	MOV	R0,R1
+  F42E   045B           	RT
+                        ;
+                        ; BECAUSE IDE TRANSFERS ARE IN 16 BIT WORDS AND WE ONLY HAVE ACCESS TO 8 BIT
+                        ; TRANSFERS, 256 BYTES REPRESENTS AN LBA AND TWO LBA A SECTOR.
+                        ;
+                        ; WE ENTER WITH R4 -> BUFFER
+                        
+  F430   2C00           IDE_WRITE_DATA:	FAR_REF
+  F432   0200 0200      	LI	R0,BYTSEC
+  F436   020C 8040      	LI	PORT,IDE_DATA	 	;DATA REG
+  F43A   0780           WL11:	LDS
+  F43C   D074           	MOVB	*R4+,R1
+  F43E   3081           	LDCR	R1,BYTEWIDE		;
+  F440   0600           	DEC	R0
+  F442   16FB           	JNE	WL11
+  F444   C040           	MOV	R0,R1
+  F446   045B           	RT
+                        
+  F448   0200 0200      IDE_WRITE_DBR:	LI	R0,BYTSEC
+  F44C   020C 8040      	LI	PORT,IDE_DATA	 	;DATA REG
+  F450   D074           WL12:	MOVB	*R4+,R1
+  F452   3081           	LDCR	R1,BYTEWIDE		;
+  F454   0600           	DEC	R0
+  F456   16FC           	JNE	WL12
+  F458   C040           	MOV	R0,R1
+  F45A   045B           	RT
+                        ;
+                        ;==========================================================================
+                        ; WRITE THE LOGICAL BLOCK ADDRESS TO THE DRIVE'S REGISTERS
+                        ; ORGANISED AS:
+                        ; LBA	WORD	0,0
+                        ;
+                        ;
+                        ; LBA + 0 = HEAD   (MSB)
+                        ; LBA + 1 = CYL MSB
+                        ; LBA + 2 = CYL LSB
+                        ; LBA + 3 = SECTOR (LSB )
+                        ; LBA VALUE PASSED IN R4 AND R5 (LSB)
+                        ;
+                        ;THERE IS A PROBLEM WITH THE HARDWARE CIRCUIT WHERE IF THE MSB OF THE LBA REGISTERS IS 1, THE CRU PORT CAUSES THE HARDWARE TO HAND
+                        ;THIS IS SOMETHING TO DO WITH THE THE SEGMENT ADDRESSING, AND IS FIXED BY DISABLING MEMORY MAPPING WHEN READING THE IDE.
+                        ;
+                        ;THIS HAS BEEN FIXED ELSEWHERE TO ENSURE THAT THE /PSEL IS SET HIGH, BUT THE "COMMENTED OUT" CODE IS KEPT JUST AS A REMINDER
+                        ;
+                        ;;First set /PSEL HIGH to disable any memory mapping
+                        ;	STST	R0
+                        ;	ANDI	R0,0FF7FH
+                        ;	LST	R0
+                        ;==============================================================================
+                        ;
+  F45C   04E0 00A8      IDE_WR_LBA:	CLR	@LBA
+  F460   04E0 00AA      	CLR	@LBA+2
+  F464   C805 00AA      	MOV	R5,@LBA+2
+  F468   D060 00A8      	MOVB	@LBA+0,R1		;GET THE FIRST MSB BYTE
+  F46C   0241 0F00      	ANDI	R1,0FH*256
+  F470   0261 E000      	ORI	R1,0E0H*256		; 0EH IS JUST THE 1110 CODE FOR HEAD REGISTER(BUT LOOKS LIKE WHEN
+                        				; WE ARE IN PAGE 1 THE MSB CAUSES A FAULT) 060H APPEARS TO WORK
+  F474   020C 804C      	LI	PORT,IDE_HEAD		; IDE HEAD
+  F478   3081           	LDCR	R1,BYTEWIDE
+                        
+  F47A   D060 00A9      	MOVB	@LBA+1,R1
+  F47E   020C 804A      	LI	PORT,IDE_CYL_MSB	;CYLINDER MSB
+  F482   3081           	LDCR	R1,BYTEWIDE
+                        
+  F484   D060 00AA      	MOVB	@LBA+2,R1
+  F488   020C 8048      	LI	PORT,IDE_CYL_LSB	;CYLINDER LSB
+  F48C   3081           	LDCR	R1,BYTEWIDE
+                        
+  F48E   D060 00AB      	MOVB	@LBA+3,R1
+  F492   020C 8046      	LI	PORT,IDE_SECTOR		;CYLINDER LSB
+  F496   3081           	LDCR	R1,BYTEWIDE
+                        ;
+                        ; WE NEED TO READ TWO SECTORS TO GET 512 BYTES DUE TO THE FACT THAT WE CAN'T DO 16 BIT READS/WRITES
+                        ;
+  F498   0201 0200      	LI	R1,2*256		;
+  F49C   020C 8044      	LI	PORT,IDE_SEC_CNT		;CYLINDER LSB
+  F4A0   3081           	LDCR	R1,BYTEWIDE
+  F4A2   045B           	RT
+                        
+                        
+                        
+                        ;
+                        ;======================= END IDE INTERFACE ROUTINES ==============
+                        ;
+                        
+                        ;
+                        ;********************************
+                        ;
+                        ;INTIALISE	INT.VECTORS	ETC
+                        ;
+                        ;*******************************
+                        ;
+  F4A4   2DC0           INTSYS	RET
+                        ;
+                        ;********************************
+                        ;
+                        ;RESET	FDC
+                        ;
+                        ;********************************
+                        ;
+  F4A6   2DC0           RSET	RET
+                        ;
+                        ;
+                        ;*******************************************
+                        ;
+                        ; 	SET THE TIME OUT TIMER
+                        ;
+  F4A8   00F0 F4AC      SETTIMER:	WORD	INTWP4,SETTIMER+4
+  F4AC   020C 0080      	LI	PORT,0080H
+  F4B0   1E14           	SBZ	20		;RESET INTERRUPT
+  F4B2   0208 00C8      	LI	R8,200		; 200 X 16MS = 7.0SEC
+  F4B6   C808 EF40      	MOV	R8,@TIMEOUT
+  F4BA   1E0E           	SBZ	14
+  F4BC   1D0D           	SBO	13		;LOAD INTERVAL TIMER ONLY
+  F4BE   3220 F4C6      	LDCR	@INTLV2,8
+  F4C2   1D14           	SBO	20		;ENABLE INTERRUPT
+  F4C4   0380           	RTWP
+                        ;
+  F4C6   FF             INTLV2:	BYTE	255		;16.0 MILLISECONDS
+  F4C7   00             	EVEN
+                        ;
+                        ;;*******************************************
+                        ;
+                        ;	SEEK TO THE TRACK NUMBER HELD IN R3
+                        ;
+                        ;	DRIVE # IS IN DRIVE
+                        ;
+                        ;********************************************
+                        ;
+  F4C8   06A0 F2C0      MSEEK:	BL	@IDE_READY
+  F4CC   2DC0           	RET			;RETURN TO EXTERNAL CALL
+                        ;
+                        ;******************************
+                        ;
+                        ;	MAIN INTERRUPT ROUTINES
+                        ;
+                        ;********************************
+                        ;
+  F4CE   0380           INT2:	RTWP
+  F4D0   0380           INT3: 	RTWP
+                        ;
+                        ;
+                        ;*********************************************************************
+                        ;
+                        ;	THIS INTERRUPT IS CONTROLED BY THE TIMER ON THE TMS9902
+                        ;
+                        ;**********************************************************************
+                        ;
+                        
+  F4D2   020C 0080      INTTIMER:	LI	PORT,CRUBASE
+  F4D6   1F19           	TB	25
+  F4D8   160B           	JNE	TIME2
+  F4DA   1D14           	SBO	20		;RESET INTERRUPT
+  F4DC   0620 EF40      	DEC	@TIMEOUT
+  F4E0   1607           	JNE	TIME2
+  F4E2   05A0 EF40      	INC	@TIMEOUT
+  F4E6   1E14           	SBZ	20		;DISABLE TIMER
+  F4E8   020C 0000      	LI	PORT,SELMUX
+  F4EC   04C8           	CLR	R8
+  F4EE   3148           	LDCR	R8,5		;CLEAR DISKS
+  F4F0   0380           TIME2	RTWP
+                        ;
+                        ;***********************************************************************
+                        ;
+                        ;	MESSAGES
+                        ;
+                        ;************************************************************************
+                        ;
+  F4F2   0D0A 20        ERRMSG	BYTE	0DH,0AH,20H
+  F4F5   4644 4320      	TEXT	'FDC error type: '
+  F4F9   6572 726F      
+  F4FD   7220 7479      
+  F501   7065 3A20      
+  F505   00             	BYTE	0
+                        ;STKMSG	BYTE	0DH,0AH,20H
+                        ;	TEXT	'Stack overflow at: '
+                        ;	BYTE	0
+  F506   2044 7269      DRVMSG	TEXT	' Drive: '
+  F50A   7665 3A20      
+  F50E   00             	BYTE	0
+  F50F   2054 7261      TRKMSG	TEXT	' Track: '
+  F513   636B 3A20      
+  F517   00             	BYTE	0
+  F518   2053 6563      SECTMSG	TEXT	' Sector: '
+  F51C   746F 723A      
+  F520   20             
+  F521   00             	BYTE	0
+                        ;
+                        ;***************************************************************************
+                        ;
+                        ;	ALL XOP's AND WORKSPACES ARE DEFINED IN THIS SECTION AND ARE USED BY ALL PROGRAMMES
+                        ;	THAT INTERACT WITH THE MONITOR ROUTINES
+                        ;
+                        ;	NOTES.
+                        ;		1. ALL INTWP'S AND XOPWP'S OVERLAP AND SO ANY INT OR XOP
+                        ;	      	   FUNCTION CODE MAY ONLY USE REGISTERS R8-R10. REGISTERS R11
+                        ;	      	   TO R15 ARE RESERVED FOR XOP & INT LINKAGES.
+                        ;
+                        ;		2. THE XOP WORKSPACES ARE JUST FOR MANAGING THE STACK AND CONTEXT
+                        ;		   CALLS THE ORIGINAL WP IS PRESERVED AFTER THE CALL, WHICH MEANS
+                        ;		   THAT CALLING ROUTINES SHARE THE SAME REGISTERS.
+                        ;
+                        ;		3. EVEN THOUGH R9 & R10 ARE GENERALLY USED AS STACK REGISTERS
+                        ;		   THIS DOES NOT APPLY IN INTERRUPT WORKSPACE WHERE THEY CAN'T
+                        ;		   BE USED FOR THAT PURPOSE - SIMPLY BECAUSE THE STACK POINTER
+                        ;		   IS NOT PASSED TO THE NEW WORKSPACE.  THEY CAN BE COPIED USING
+                        ;		   THE R13 INDEX IF NEEDED AS R13 POINTS TO THE CALLING ROUTINE'S WORKSPACE
+                        ;
+                        ;*****************************************************************************
+                        ;
+                        ;	EVEN
+  00B0                  INTWP0	EQU	INTWP		;INTERRUPT WORKSPACE
+  00C0                  INTWP1	EQU	INTWP0+16		;ONLY 7 ALLOWED
+  00D0                  INTWP2	EQU	INTWP1+16
+  00E0                  INTWP3	EQU	INTWP2+16
+  00F0                  INTWP4	EQU	INTWP3+16
+  0100                  INTWP5	EQU	INTWP4+16
+  0110                  INTWP6	EQU	INTWP5+16
+  0120                  INTWP7	EQU	INTWP6+16
+                        ;
+                        ;    NOW XOP'S
+                        ;
+  0130                  XOPWP0	EQU	XOPWP
+  0140                  XOPWP1	EQU	XOPWP0+16
+  0150                  XOPWP2	EQU	XOPWP1+16
+  0160                  XOPWP3	EQU	XOPWP2+16
+  0170                  XOPWP4	EQU	XOPWP3+16
+  0180                  XOPWP5	EQU	XOPWP4+16
+  0190                  XOPWP6	EQU	XOPWP5+16
+  01A0                  XOPWP7	EQU	XOPWP6+16
+  01B0                  XOPWP8	EQU	XOPWP7+16
+  01C0                  XOPWP9	EQU	XOPWP8+16
+  01D0                  XOPWP10	EQU	XOPWP9+16
+  01E0                  XOPWP11	EQU	XOPWP10+16
+  01F0                  XOPWP12	EQU	XOPWP11+16
+  0200                  XOPWP13	EQU	XOPWP12+16
+  0210                  XOPWP14	EQU	XOPWP13+16
+  0220                  XOPWP15	EQU	XOPWP14+16
+  0230                  XOPWP16	EQU	XOPWP15+16
+                        ;
+                        ;	AORG	XOPWP15+32
+                        ;
+                        ;
+                        ;	DEFINE ALL THE XOP ROUTINES
+                        ;
+                        ;=================================================================
+                        ;	SUBROUTINE FAR_REF
+                        ;	CALLING METHOD:	FAR_REF
+                        ;
+                        ; 	DESCRIPTION:  THIS ROUTINE FORCES THE FAR REFERENCE REGISTER TO HOLD THE CORRECT
+                        ;	VALUE IN CASE THERE HAS BEEN CHANGED IN THE SEGMENT REGISTER BIT.  IT IS LIKELY
+                        ; 	XOP OPERATION MAY BE A FACTOR IN NEEDING THIS ROUTINE.   USE IT BEFORE MAKING LDS AND LDD OPERATIONS.
+                        ;
+                        ;====================================================================
+                        ;
+  F522   C26D 0012      XOP0:	MOV	@2*R9(R13),XR9 		;GET STACK SEGMENT REFERENCE
+  F526   06C9           	SWPB	XR9		;THE CALLING REFERENCE IS IN THE LSB BYTE WAS IT CALLED FROM 0 OR 1
+  F528   0A79           	SLA	XR9,7		;SHIFT INTO MSB
+  F52A   020C 80C0      	LI	PORT,MEMBASE
+  F52E   3089           	LDCR	XR9,BYTEWIDE		;GET PAGE VALUE FROM STEP ABOVE
+  F530   024F FF7F      	ANDI	XR15,DISABLE_PSEL		;DISABLE /PSEL TO KEEP EXCUTION STABLE WHILE SWITCHING
+  F534   0380           	RTWP
+                        ;
+                        ;============================================
+                        ;	SUBROUTINE FAR RETURN
+                        ;	CALLING METHOD:	RETF
+                        ;
+                        ;	STACK ORDER
+                        ;	SEGMENT REGISTER (16 bits, Upper 8 bits Called Page, Lower 8 bits return page)
+                        ;	INSTRUCTION POINTER
+                        ;
+                        ; 	ASSUME XOP WORKSPACES ARE IN COMMON
+                        ;
+                        ;============================================
+                        ;
+  F536   C2AD 0014      XOP1:	MOV	@2*R10(R13),XR10 		;GET STACK POINTER FROM CALLING WP IN R13
+  F53A   C27A           	MOV	*XR10+,XR9		;GET SEGMENT REGISTER
+  F53C   C3BA           	MOV	*XR10+,XR14		;MOVE IP/PC INTO R14 FOR CALL
+  F53E   CB4A 0014      	MOV	XR10,@2*SP(R13)		;UPDATE STACK POINTER
+                        ;
+                        ; CHECK IN WHICH SEGMENT WE ARE SUPPOSED TO BE EXECUTING CODE.  ENABLE PSEL THROUGH RTWP
+                        ;
+  F542   06C9           	SWPB	XR9		; GET CALLING PAGE
+  F544   0A79           	SLA	XR9,7		;SHIFT INTO MSB
+  F546   020C 80C0      	LI	PORT,MEMBASE
+  F54A   3089           	LDCR	XR9,BYTEWIDE		;GET PAGE VALUE FROM STEP ABOVE
+  F54C   026F 0080      	ORI	XR15,EN_PSEL		;SET PSEL BIT
+  F550   0380           	RTWP
+                        ;
+                        ;
+                        ;======================================================================
+                        ;   deprecated setreg used by monitor only
+                        ;   XOP2: SETSREG - SETS A NEW PAGE REGISTER USING THE SEGMENT REGISTER R9
+                        ;   FOR THIS NEW VERSION TO WORK, THERE MUST BE COMMON MEMORY (6116 SRAM DEFINED)
+                        ;
+                        ;   PAGE VALUE ON SBC IS D0,D1,D2 AND D3 WHERE D0 IS MSB SO WE NEED TO SHIFT
+                        ;   LOWER 4 BITS IN TO THE TOP NYBIL
+                        ;
+                        ;   NOTE, THIS ROUTINE DOES NOT SELECT A NEW MEMORY SEGMENT IT JUST SIMILAR
+                        ;   TO A MEMORY MAP REGISTER.  IT IS SET BUT ONLY ACTIVE ONCE THE PSEL BIT
+                        ;   IN THE STATUS REGISTER IS SET.  THIS IS HOW A MEMORY MAPPER WORKS.
+                        ;
+                        ;
+                        ;   R9 IS THE SEGMENT REGISTER.  HIGH BYTE IS SEGMENT REGISTER,
+                        ;   LOW BYTE IS THE RETURN SEGMENT USED BY FAR_CALLS AND RETF
+                        ;
+                        ;   THIS XOP IS ALWAYS CALLED FROM COMMON DURING THE EXECUTE LOAD PHASE (I.E. 0400H)
+                        ;
+                        ;
+                        ;=======================================================================
+                        ;
+  F552   D26D 0012      XOP2:	MOVB	@2*R9(XR13),XR9
+  F556   0A79           	SLA	XR9,7		;SHIFT INTO MSB
+  F558   020C 80C0      	LI	PORT,MEMBASE
+  F55C   3089           	LDCR	XR9,BYTEWIDE		;GET PAGE VALUE FROM STEP ABOVE
+                        ;	ANDI	R15,DISABLE_PSEL		;DISABLE /PSEL TO KEEP EXCUTION STABLE WHILE SWITCHING
+  F55E   026F 0080      	ORI	XR15,EN_PSEL	;NOW BRING /PSEL LOW TO EFFECT SEGMENT CHANGE
+  F562   0380           	RTWP
+                        
+                        ;
+                        ;=========================CALL FAR=====================
+                        ; LONG CALL (THIS REQUIRES THE SEGMENT REGISTER TO BE SET AND THEN PSEL ENABLED WITH THE RTWP CALL)
+                        ; REMEMBER THAT THE MA0 BIT DETERMINES WHICH PAGE, NOT THE PSEL.  PSEL ONLY ENABLES MAPPING.
+                        ; STEPS:
+                        ;   PUSH PC (IP)  ONTO STACK
+                        ;   PUSH CODE SEGMENT ONTO STACK ( 0xCCRRH CC:PAGE, RR:RETURN PAGE )
+                        ;   SET RTWP REGISTERS
+                        ;   SET OR CLEAR PSEL BIT IN STATUS REGISTER
+                        ;   RTWP TO NEW PROCEDURE/ROUTINE
+                        ;
+                        ; (NOTE: SP CAN BE EITHER IN 0 OR 1 HENCE WE REQUIRE LDS HOWEVER THERE IS ALWAYS ONLY ONE
+                        ; STACK AND MUST BE ALIGNED TO THE PAGE WHERE THE STACK IS PLACED.
+                        ;
+                        ;========================================================
+                        ;
+  F564   C2AD 0014      XOP3:	MOV	@2*SP(R13),XR10		;GET STACK POINTER FROM CALLING WP IN R13
+                        ;
+                        ; XOP3 WORKSPACE HAS NOW SAVED THE COMPLETE CONTEXT FOR THE CALLING MODULE
+                        ; I.E. SP(XR10), WP(XR13), IP(XR14), AND SR(XR15)
+                        
+  F568   064A           	DECT	XR10
+  F56A   C68E           	MOV	R14,*XR10		;PUSH SAVED PC ONTO STACK
+  F56C   064A           	DECT	XR10
+  F56E   C6AD 0012      	MOV	@2*R9(R13),*XR10	;MOVE SEGMENT REGISTER ONTO STACK
+  F572   CB4A 0014      	MOV	XR10,@2*SP(R13)		;UPDATE STACK POINTER
+  F576   C38B           	MOV	XR11,XR14		;MOV EFFECTIVE ADDRESS INTO R14
+                        ;
+                        ; IMPORTANT TO NOTE THAT THE SEGMENT REGISTERS DETERMINE THE PAGE EXECUTION WILL BE DIRECTED TO.
+                        ;
+  F578   C26D 0012      	MOV	@2*R9(R13),XR9		;GET SEGMENT REGISTER
+                        ;
+                        ; NOW SET THE SEGMENT PAGE REGISTER AND ALSO ENABLE PSEL FOR THE RTWP CALL
+                        ;
+  F57C   0A79           	SLA	XR9,7		;SHIFT INTO MSB
+  F57E   020C 80C0      	LI	PORT,MEMBASE
+  F582   3089           	LDCR	XR9,BYTEWIDE		;GET PAGE VALUE FROM STEP ABOVE
+  F584   02CF           	STST	XR15
+  F586   026F 0080      	ORI	XR15,EN_PSEL		;NOW BRING /PSEL LOW TO EFFECT SEGMENT CHANGE
+  F58A   0380           	RTWP
+                        
+                        ;
+                        ;
+                        ;**********************************************
+                        ; PUSH REGISTERS R0 to RN ONTO THE STACK - PUSHREG RN
+                        ;*********************************************
+                        ;
+  F58C   C20D           XOP4	MOV	R13,R8		;GET THE EFFECTIVE ADDRESS OF CALLING WORKSPACE
+  F58E   C2AD 0014      	MOV	@2*R10(R13),SP		;GET SYSTEM STACK POINTER
+  F592   064A           XOP4A	DECT	SP		;DECREMENT STACK POINTER
+  F594   C6B8           	MOV	*R8+,*SP
+  F596   82C8           	C	R8,R11		;KEEP PUSHING REGISTERS (R11 HOLDS EFFECTIVE ADDRESS OF REGISTER RN)
+  F598   12FC           	JLE	XOP4A
+  F59A   CB4A 0014      	MOV	SP,@2*R10(R13)		;UPDATE THE STACK POINTER
+  F59E   0380           	RTWP
+                        ;
+                        ;***********************************************
+                        ; POPS REGISTERS R0 to RN OFF THE STACK -
+                        ;************************************************
+                        ;
+  F5A0   C2AD 0014      XOP5	MOV	@2*R10(R13),SP		;GET STACK POINTER
+  F5A4   C6FA           XOP5A	MOV	*SP+,*R11		;GET FIRST REGISTER
+  F5A6   064B           	DECT	R11		;DECT TWO EFFECTIVE ADDRESS, IE RN
+  F5A8   834B           	C	R11,R13		;COMPARE AGAINST WORKSPACE TOP ADDRESS IE R0
+  F5AA   14FC           	JHE	XOP5A
+  F5AC   CB4A 0014      	MOV	SP,@2*R10(R13)
+  F5B0   0380           	RTWP
+                        ;
+                        ;************************************************
+                        ;	CALL A SUBROUTINE
+                        ;	CALLING METHOD:   CALL SUBROUTINE_ADDRESS
+                        ;*************************************************
+                        ;
+  F5B2   C2AD 0014      XOP6	MOV	@2*R10(XR13),XR10 	;GET STACK POINTER FROM CALLING WP IN R13
+  F5B6   064A           	DECT	XR10
+  F5B8   C68E           	MOV	XR14,*XR10		;PUSH SAVED PC ONTO STACK
+  F5BA   C38B           	MOV	XR11,R14		;MOVE EA INTO R14 FOR CALL
+  F5BC   CB4A 0014      	MOV	XR10,@2*R10(XR13)	;UPDATE STACK POINTER
+  F5C0   0380           	RTWP
+                        ;
+                        ;============================================
+                        ;	SUBROUTINE RETURN
+                        ;	CALLING METHOD:	RET
+                        ;============================================
+                        ;
+  F5C2   C2AD 0014      XOP7	MOV	@2*R10(XR13),XR10	;GET STACK POINTER
+  F5C6   C3BA           	MOV	*XR10+,XR14		;MOVE EA INTO R14 FOR CALL
+  F5C8   CB4A 0014      	MOV	XR10,@2*R10(XR13)	;GET UPDATED STACK POINTER
+  F5CC   0380           	RTWP			;RETURN
+                        ;
+                        ;*************************************************
+                        ;	PUSH DATA/REGISTER ONTO THE STACK
+                        ;	USES CALLER'S WP AND STACK POINTERS
+                        ;*************************************************
+                        ;
+  F5CE   C2AD 0014      XOP8	MOV	@2*R10(R13),SP
+  F5D2   064A           	DECT	SP
+  F5D4   C69B           	MOV	*R11,*SP		;MOVE DATA FROM EFFECTIVE ADDRESS
+  F5D6   CB4A 0014      	MOV	SP,@2*R10(R13)
+  F5DA   0380           	RTWP
+                        ;
+                        ;======================================================
+                        ;
+                        ;	POP DATA/REGISTER OFF STACK
+                        ;	USAGE POP RN, POP @ADDR
+                        ;
+                        ;======================================================
+                        ;
+  F5DC   C2AD 0014      XOP9	MOV	@2*R10(R13),SP
+  F5E0   C6FA           	MOV	*SP+,*R11
+  F5E2   CB4A 0014      	MOV	SP,@2*R10(R13)
+  F5E6   0380           	RTWP
+                        ;
+                        ;=====================================================
+                        ;	WRITE A HEX CHARACTER
+                        ;
+                        ;	CALLING METHOD:   WHEX REG
+                        ;
+                        ;	FUNCTION: WRITE CONTENTS OF Reg AS 4 HEX DIGITS
+                        ;========================================================
+                        ;
+  F5E8   C31B           XOP10	MOV	*R11,R12		;GET VALUE
+  F5EA   0209 0004      	LI 	R9,4		;SET COUNTER TO 4 DIGITS
+                        ;
+  F5EE   C20C           XOP10A	MOV	R12,R8		;MOVE 4 DIGITS INTO R8R
+  F5F0   09C8           	SRL	R8,12		;ISOLATE HEX DIGIT
+  F5F2   0A88           	SLA	R8,8		;BYTE ALIGN1
+  F5F4   0288 0900      	CI	R8,0900H		;IS THIS NUMERIC
+  F5F8   1202           	JLE	XOP10B		;YES
+  F5FA   0228 0700      	AI	R8,0700H		;ALPHA ADJUST
+                        ;
+  F5FE   0228 3000      XOP10B	AI	R8,'0'*256		;NUMERIC TO ASCII
+  F602   2F08           	WRITE	R8		;O/P THE HEX DIGIT
+  F604   0BCC           	SRC	R12,12		;ALIGN NEXT DIGIT
+  F606   0609           	DEC	R9		;IF FINISHED EXIT
+  F608   16F2           	JNE	XOP10A
+  F60A   0380           	RTWP
+                        ;
+                        ;===========================================================
+                        ;	READ IN A 16 BIT HEX CHARACTER
+                        ;
+                        ;	CALL:   RHEX RN
+                        ;
+                        ;	FUNCTION: READ  CONTENTS INTO  RN AS 4 HEX DIGITS
+                        ;============================================================
+                        ;
+  F60C   04CC           XOP11	CLR	R12		;CLEAR ACCUMULATOR
+  F60E   2F4A           XOP11A	READ	R10		;GET AN INPUT CHARACTER
+  F610   2F0A           	WRITE	R10		;ECHO THE CHARACTER
+                        ;
+                        ;	CHECK FOR VALID HEX INPUT
+                        ;
+  F612   028A 3000      XOP11B	CI	R10,'0'*256		;BELOW MIN NUMERIC ?
+  F616   1A10           	JL	NOTHEX		;IF YES, JUMP
+  F618   028A 3900      	CI	R10,'9'*256		;ABOVE MAX NUMERIC ?
+  F61C   1208           	JLE	GOTONE		;IF NO, JUMP
+  F61E   028A 4100      	CI	R10,'A'*256		;BELOW MIN ALPHA ?
+  F622   1A0A           	JL	NOTHEX		;IF YES JUMP
+  F624   028A 4600      	CI	R10,'F'*256		;ABOVE MAX ALPHA ?
+  F628   1B07           	JH	NOTHEX		;IF YES, JUMP
+  F62A   022A 0900      	AI	R10,0900H		;ALPHA ADJUST
+  F62E   0A4A           GOTONE	SLA	R10,4		;ISOLATE DIGIT
+  F630   09CA           	SRL	R10,12		;WORD ALIGN DIGIT
+                        ;
+                        ;
+                        ; DIGIT TO ACCUMULATOR
+                        ;
+  F632   0A4C           	SLA	R12,4		;MAKE ROOM FOR NEW DIGIT
+  F634   A30A           	A	R10,R12		;ADD NEW DIGIT IN
+  F636   10EB           	JMP	XOP11A		;GO GET NEXT DIGIT
+  F638   C6CC           NOTHEX	MOV	R12,*R11		;RETURN THE VALUE
+  F63A   0380           	RTWP
+                        ;
+                        ;==================================================
+                        ;	WRITE A CHARACTER
+                        ;==================================================
+                        ;
+  F63C   020C 0080      XOP12	LI	R12,CRUBASE
+  F640   1D10           	SBO	16
+  F642   1F16           XOP12A	TB	22
+  F644   16FE           	JNE	XOP12A
+  F646   321B           	LDCR	*R11,8
+  F648   1E10           	SBZ	16
+  F64A   0380           	RTWP
+                        ;
+                        ;====================================================
+                        ;	READ CHARACTER INTO LEFT BYTE (MSB)
+                        ;	READ RN
+                        ;====================================================
+                        ;
+  F64C   020C 0080      XOP13	LI	R12,CRUBASE
+  F650   1F15           XOP13A	TB	21		;RECEIVE BUFFER REG FULL ?
+  F652   16FE           	JNE	XOP13A		;NO
+  F654   04DB           	CLR	*R11
+  F656   361B           	STCR	*R11,8
+  F658   1E12           	SBZ	18		;SHOW WE RECEIVED CHARACTER
+  F65A   0380           	RTWP
+                        ;
+                        ;=========================================================
+                        ;
+                        ;	OUTPUT A NULL TERMINATED STRING
+                        ;	MESG ADDR
+                        ;
+                        ;	LDS MUST BE USED AS THE STRING COULD BE IN ANOTHER SEGMENT.
+                        ;
+                        ;==========================================================
+                        ;
+  F65C   0780           XOP14	LDS			;MUST USE LDS, SO SEGMENT REGISTER MUST BE SET
+  F65E   D33B           	MOVB	*R11+,R12		;GET THE CHARACTER
+  F660   1302           	JEQ	XOP14A		;IF ZERO EXAT
+  F662   2F0C           	WRITE	R12
+  F664   10FB           	JMP	XOP14		;RETURN
+  F666   0380           XOP14A	RTWP
+                        
+                        ;=================================================
+                        
+                        ;
+                        ;
+                        ;************************************************
+                        ;	DEBUG AND TRACING INFORMATION
+                        ;
+                        ;	DEBUG @MODULE_NAME
+                        ;
+                        ;	THE MODULE_ID WILL BE PRINTED SO THAT THE USER CAN TELL WHICH
+                        ;	MODULE IS BEING DEBUGGED.  KEEP TO 8 BYTES AND NULL TERMINATED
+                        ;
+                        ;	USAGE:
+                        ;	;ID
+                        ;	DB_MAKF1:	TEXT	"MAKFL1"	;TEMP FOR DEBUG
+                        ;	WORD	0
+                        ;
+                        ;	DEBUG	@DB_MAKF1
+                        ;
+                        ;*************************************************
+                        ;
+  F668   0208 000A      XOP15:	LI	R8,10		;KEEP NAMES TO 8 BYTES
+  F66C   0209 EF20      	LI	R9,DEBUG_NAME
+  F670   DE7B           XOP15_NAME:	MOVB	*R11+,*R9+		;SAVE THE NAME
+  F672   1305           	JEQ	XOP15_MAIN
+  F674   0608           	DEC	R8
+  F676   16FC           	JNE	XOP15_NAME
+  F678   0208 0000      	LI	R8,0;		;NULL TERMINATE
+  F67C   D648           	MOVB	R8,*R9
+                        
+                        ;
+                        ; 	NOW SAVE THE TRACE DATA
+                        ;
+  F67E   020B EF2A      XOP15_MAIN:	LI	R11, DEBUG_BUFFER
+  F682   CECE           	MOV	R14,*R11+		;STORE NEXT STATEMENT PROGRAMME COUNTER
+  F684   CECD           	MOV	R13,*R11+		;STORE WP
+  F686   CECF           	MOV	R15,*R11+		;STORE STATUS
+  F688   0208 0010      	LI	R8,16		;16 REGISTERS
+                        XOP15_REGS:
+  F68C   CEFD           	MOV 	*R13+,*R11+		;COPY REGISTERS
+  F68E   0608           	DEC	R8
+  F690   16FD           	JNE	XOP15_REGS
+  F692   022D FFE0      	AI	R13,-32		;RESTOR WORKSPACE REGISTER LOCATION
+  F696   1000           	JMP	LIST_REG
+                        ;
+                        ;
+                        ; PRINT OUT DEBUGGING/TRACE PC, STATUS AND REGISTERS
+                        ;
+  F698   0209 EF2A      LIST_REG:	LI	R9,DEBUG_BUFFER
+  F69C   0208 0010      	LI	R8,16
+  F6A0   2FA0 F044       	MESG	@CRLF		;PRINT INDENTATION
+  F6A4   2FA0 EF20       	MESG	@DEBUG_NAME		;PRINT THE NAME OF THE MODULE
+  F6A8   2FA0 F72F       	MESG	@SP_REG
+  F6AC   C2AD 0014       	MOV	@2*SP(R13),R10	;GET STACK POINTER
+  F6B0   2E9A            	WHEX	*R10		;PRINT CONTENTS
+  F6B2   2FA0 F728      	MESG	@PC_REG		;PRINT " PC="
+  F6B6   2EB9           	WHEX	*R9+
+  F6B8   2FA0 F71A      	MESG	@WP_REG		;WORKSPACE POINTER
+  F6BC   2EB9           	WHEX	*R9+
+  F6BE   2FA0 F721      	MESG	@ST_REG		;PRINT " ST="
+  F6C2   C2F9           	MOV	*R9+,R11		;GET STATUS REGISTER VALUE
+  F6C4   2E8B           	WHEX	R11
+                        ;	MESG	@EA_REG		;EFFECTUVE ADDRESS POINTER
+                        ;	WHEX	*R9+
+                        ;
+  F6C6   020A 2000      	LI	R10,' '*256		;PRINT SPACE
+  F6CA   2F0A           	WRITE	R10
+  F6CC   020A 3000      LIST_REGA:	LI	R10,30H*256		;PRINT 0
+  F6D0   0A1B           	SLA	R11,1
+  F6D2   1802           	JOC	LIST_REGB
+  F6D4   2F0A           	WRITE	R10
+  F6D6   1003           	JMP	LIST_REGC
+  F6D8   022A 0100      LIST_REGB:	AI	R10,1*256		;PRINT 1
+  F6DC   2F0A           	WRITE	R10
+  F6DE   0608           LIST_REGC:	DEC	R8
+  F6E0   16F5           	JNE	LIST_REGA
+  F6E2   04CA           	CLR	R10
+  F6E4   2FA0 F044      LIST_REG1:	MESG	@CRLF		;PRINT CR,LF
+  F6E8   0208 5200      LIST_REG2:	LI	R8,'R'*256
+  F6EC   2F08           	WRITE	R8		;PRINT "R"
+  F6EE   2F2A F08E      	WRITE	@NUMTAB(R10)	;PRINT REGISTER NO
+  F6F2   2F2A F08F      	WRITE	@NUMTAB+1(R10)	;PRINT REGISTER NO
+  F6F6   0208 3D00      	LI	R8,'='*256
+  F6FA   2F08           	WRITE	R8
+  F6FC   2EB9           	WHEX	*R9+		;PRINT REGISTER CONTENTS
+  F6FE   05CA           	INCT	R10
+  F700   028A 0020      	CI	R10,20H
+  F704   1307           	JEQ	LIST_EXIT
+  F706   0208 2000      	LI	R8,' '*256		;PRINT A SPACE
+  F70A   2F08           	WRITE	R8
+  F70C   26A0 F0EE      	CZC	@MASK15,R10
+  F710   13E9           	JEQ	LIST_REG1
+  F712   10EA           	JMP	LIST_REG2
+  F714   2FA0 F044      LIST_EXIT:	MESG	@CRLF		;PRINT INDENTATION
+  F718   0380           	RTWP
+                        
+  F71A   2057 5020      WP_REG:	TEXT	' WP = '
+  F71E   3D20           
+  F720   00             	BYTE	0
+  F721   2053 5420      ST_REG:	TEXT	' ST = '
+  F725   3D20           
+  F727   00             	BYTE	0
+  F728   2050 4320      PC_REG:	TEXT	' PC = '
+  F72C   3D20           
+  F72E   00             	BYTE	0
+  F72F   202A 5350      SP_REG:	TEXT	' *SP = '
+  F733   203D 20        
+  F736   00             	BYTE	0
+  F737   2045 4120      EA_REG:	TEXT	' EA = '
+  F73B   3D20           
+  F73D   00             	BYTE	0
+  F73E                  	EVEN
+                        ;NUMTAB:	TEXT	'0 1 2 3 4 5 6 7 8 9 101112131415'
+                        ;MASKF:	WORD	00FH
+                        ;
+                        ;************************************************************
+                        ;
+                        ;THIS SECTION HOLDS ALL THE TIBUG_MONITOR INSTRUCTION
+                        ;	Q (QBOOT), U (HEXLOAD),V (HEXLOAD2),G (GO TO) M(MOVE)
+                        ;	F(FIND),O (OUTPUT), W (WORK SPACE),R (PRINT_REGS),
+                        ;	P(PRINT),X(XCUTE),L(LOWW),H(SETBP),S(STEP),T(TRACE),
+                        ;	/(CHAR),.(SWITCH_SEG),O(OPEN)
+                        ;
+                        ;	ONLY PARTIAL IMPLEMENTATION.  FULL CODE IN TIMON.A99 SOURCE
+                        ;*********************************************************
+                        ;	BOOT INSTRUCTION
+                        ;
+  F73E   0460 F22A      QBOOT	B	@MBOOT		;BRANCH HERE TO LOAD THE SYSTEM
+                        ;
+                        ;***********************************************************
+                        ;	GO INSTRUCTION G
+                        ;
+  F742   163A           GO:	JNE	MON00A		;JNE ON HEXIN FLAG
+  F744   0452           	B	*R2
+                        ;
+                        ;*************************************************************
+                        ; INSTRUCTION PRINT OUT REGISTERS
+                        ;
+  F746   0204 EF44      PRINT_REGS:	LI	R4,WPSTORE
+  F74A   C114           	MOV	*R4,R4		;R4:=USER WORKSPACE BY DEFAULT
+  F74C   C0C3           	MOV	R3,R3		;TEST HEXIN FLAG
+  F74E   1601           	JNE	REGIST0
+  F750   C102           	MOV	R2,R4
+  F752   0244 FFFE      REGIST0 	ANDI	R4,0FFFEH		;MAKE ADDRESS EVEN
+  F756   2FA0 F12A      	MESG	@MESS03+1		;PRINT INDENTATION
+  F75A   2FA0 F71A      	MESG	@WP_REG		;PRINT "WP="
+                        ;	MOV	R4,R2		;PRINT WORKSPACE ADDRESS
+  F75E   2E84           	WHEX	R4		;PRINT WORKSPACE ADDRESS
+  F760   04C5           	CLR	R5
+                        ;	CLR	R10
+  F762   2FA0 F12A      REGIST1	MESG	@MESS03+1		;PRINT SPACE, CR,LF
+  F766   0209 5200      REGIST2	LI	R9,'R'*256
+  F76A   2F09           	WRITE	R9		;PRINT "R"
+  F76C   2F25 F08E      	WRITE	@NUMTAB(R5)		;PRINT REGISTER NO
+  F770   2F25 F08F      	WRITE	@NUMTAB+1(R5)	;PRINT REGISTER NO
+  F774   2FA0 F131      	MESG	@MESS04
+                        	;	R9,'='*256
+                        	;WRITE	R9		;PRINT REGISTER CONTENTS
+  F778   2EB4           	WHEX	*R4+		;BL	@HEXOUT
+  F77A   0209 2000      	LI	R9,' '*256
+  F77E   2F09           	WRITE	R9
+  F780   05C5           	INCT	R5
+  F782   0285 0020      	CI	R5,20H		;HAVE 16 REGISTERS BEEN PRINTED?
+  F786   1318           	JEQ	MON00A
+  F788   2560 F0F0      	CZC	@MASK3,R5		;ODD REGISTER, IF SO CRLF
+  F78C   13EA           	JEQ	REGIST1
+  F78E   10EB           	JMP	REGIST2
+                        ;
+                        ;
+                        ; INSTRUCTION ' ' OPEN INSTRUCTION.  A '-' DELIMITER OPENS THE PREVIOUS LOCATION
+                        ;
+  F790   1601           OPEN:	JNE	OPEN00		;JNE ON HEXIN FLAG
+  F792   C382           	MOV	R2,R14
+  F794   024E FFFE      OPEN00	ANDI	R14,0FFFEH		;MAKE ADDRESS EVEN
+  F798   06A0 F7BC      OPEN01	BL	@PADDRC		;PRINT ADDRESS AND CONTENTS
+  F79C   06A0 F146      	BL 	@HEXIN
+  F7A0   1601           	JNE	OPEN02		;JNE ON HEXIN FLAG
+  F7A2   C782           	MOV	R2,*R14
+  F7A4   0281 2000      OPEN02	CI	R1,' '*256 		;LAST CHARACTER=" "?
+  F7A8   1602           	JNE	OPEN03
+  F7AA   05CE           	INCT 	R14
+  F7AC   10F5           	JMP	OPEN01
+  F7AE   0281 2D00      OPEN03	CI	R1,'-'*256 		;LAST CHARACTER="-"?
+  F7B2   1602           	JNE	MON00A
+  F7B4   064E           	DECT	R14
+  F7B6   10F0           	JMP	OPEN01
+  F7B8   0460 F050      MON00A	B	@PROMPT
+                        ;
+                        ; PRINT ADDRESS IN R14
+                        ;
+  F7BC   2FA0 F12A      PADDRC	MESG	@MESS03+1		;PRINT INDENTATION
+  F7C0   2E8E           	WHEX	R14		;PRINT ADDRESS
+  F7C2   2FA0 F12F      	MESG	@MESS03+6		;PRINT "  "
+  F7C6   2E9E           	WHEX	*R14		;PRINT CONTENTS OF ADDRESS
+                        	;BL	@HEXOUT
+  F7C8   2FA0 F12F      	MESG	@MESS03+6		;PRINT "  "
+  F7CC   045B           	RT			;RETURN FROM BL
+                        ;
+                        ; 	INSTRUCTION OUTPUT 'O'
+                        ;
+  F7CE   C10F           OUTPUT:	MOV	R15,R4
+  F7D0   C0C3           	MOV	R3,R3
+  F7D2   1601           	JNE	OUTPUT0
+  F7D4   C102           	MOV	R2,R4
+  F7D6   0244 FFFE      OUTPUT0 	ANDI	R4,0FFFEH		;MAKE ADDRESS EVEN
+  F7DA   C144           	MOV	R4,R5
+  F7DC   0245 FFF0      	ANDI	R5,0FFF0H
+  F7E0   0225 0080      	AI	R5,80H
+  F7E4   2FA0 F12A      OUTPUT1	MESG	@MESS03+1		;PRINT INDENTATION
+                        ;	MOV	R4,R2
+                        ;	BL	@HEXOUT0		;PRINT ADDRESS
+  F7E8   2E84           	WHEX	R4		;PRINT ADDRESS
+  F7EA   2FA0 F12E      	MESG	@MESS03+5		;PRINT " "
+                        	;MOV	*R4+,R2
+                        	;BL	@HEXOUT
+  F7EE   2EB4           OUTPUT2 	WHEX	*R4+
+  F7F0   2FA0 F12F      	MESG	@MESS03+6		;PRINT " "
+  F7F4   8144           	C	R4,R5
+  F7F6   1304           	JEQ	OUTPUT3
+  F7F8   2520 F0EE      	CZC	@MASK15,R4
+  F7FC   13F3           	JEQ	OUTPUT1
+  F7FE   10F7           	JMP	OUTPUT2
+  F800   2F41           OUTPUT3	READ	R1		;GET CHARACTER
+  F802   0281 2000      	CI	R1,' '*256
+  F806   16D8           	JNE	MON00A
+  F808   0225 0080      	AI	R5,80H		;AN EXTRA 4 LINES
+  F80C   10EB           	JMP	OUTPUT1
+                        ;
+                        ; INSTRUCTION W
+                        ;
+  F80E   1603           WP:	JNE	WP00		;JNE ON HEXIN FLAG
+  F810   C802 EF44      	MOV	R2,@WPSTORE
+  F814   10D1           	JMP	MON00A
+  F816   2FA0 F129      WP00	MESG	@MESS03			;PRINT INDENTATION
+  F81A   2FA0 F71A      	MESG	@WP_REG			;PRINT "WP="
+  F81E   C0A0 EF44      	MOV	@WPSTORE,R2
+  F822   2E82           	WHEX	R2
+  F824   10C9           	JMP	MON00A
+                        ;
+                        ;
+                        ; SWITCH MEMORY SEGMENT 0000., OR 0100.
+                        ;
+  F826   C102           SWITCH_SEG:	MOV	XR2,XR4
+  F828   0A74           	SLA	XR4,7		;SHIFT INTO MSB
+  F82A   020C 80C0      	LI	PORT,MEMBASE
+  F82E   3084           	LDCR	XR4,BYTEWIDE		;GET PAGE VALUE FROM STEP ABOVE
+  F830   026F 0080      	ORI	XR15,EN_PSEL		;SET PSEL BIT
+  F834   020E F050      	LI	XR14,PROMPT
+  F838   020D 0230      	LI	XR13,WORKSP
+  F83C   0380           	RTWP
+                        ;
+                        ;**************************************************************
+                        ;	COMMAND LOAD HEX FILE
+                        ;
+                        ;	ALGORITHM TAKEN FROM DDJ #22
+                        ;
+                        ;	R3  HOLDS CHECKSUM
+                        ;	R4  HOLDS RECORD LENGTH
+                        ;	R5  HOLDS LOAD ADDRESS
+                        ;
+                        ;***************************************************************
+                        ;
+  F83E   0202 3A00      HEXLOAD:	LI	R2,':'*256
+  F842   2F41           	READ	R1		;SEARCH FOR ':'
+  F844   9081           	CB	R1,R2		;COMPARE BYTE FOR :
+  F846   16FB           	JNE	HEXLOAD
+  F848   2F20 F16A      	WRITE	@DOT		;DEBUG INFO
+  F84C   04C3           	CLR 	R3		;CLEAR CHECKSUM
+  F84E   06A0 F8E2      	BL	@NEXTBYTE		;GET RECORD LENGTH
+  F852   D101           	MOVB	R1,R4
+  F854   0984           	SRL	R4,8		;LENGTH IN R4
+  F856   1313           	JEQ	INST_EXIT		;WERE DONE
+  F858   06A0 F8CC      	BL	@NEXTADDR		;GET LOAD ADDRESS
+  F85C   C141           	MOV	R1,R5
+  F85E   06A0 F8E2      	BL	@NEXTBYTE		;GET RECORD TYPE
+  F862   C104           HL_12	MOV	R4,R4		;IF RL=0 GO TO A13
+  F864   1305           	JEQ	HL_13
+  F866   06A0 F8E2      	BL	@NEXTBYTE
+  F86A   DD41           	MOVB	R1,*R5+		;STORE DATA IN MEMORY
+  F86C   0604           	DEC	R4		;REDUCE RECORD LENGTH
+  F86E   10F9           	JMP	HL_12
+  F870   06A0 F8E2      HL_13	BL	@NEXTBYTE		;GET CHECKSUM BYTE
+                        ;	MOVB	R3,R3		;CHECK FOR ZERO
+  F874   13E4           	JEQ	HEXLOAD
+                        ;
+                        ; FALL THROUGH TO ERROR
+                        ;
+  F876   2F41           HL_14	READ	R1		;READ ANY RUBBISH
+  F878   2F20 F16E      	WRITE	@LOADERR		;TELL TERMINAL SYSTEM TO STOP
+  F87C   2F41           	READ	R1		;READ ANY RUBBISH
+  F87E   0460 F050      INST_EXIT:	B	@PROMPT		;BACK TO TIMON
+                        ;
+                        ;
+                        ;**************************************************************
+                        ;	COMMAND LOAD HEX FILE 2
+                        ;	SEGMENTED MEMORY PAGES VERSION (V)
+                        ;	ADDRESS FORMAT:
+                        ;	  A SINGLE BYTE PAGE NUMBER IS NOW INSERTED BEFORE EACH 16 BIT ADDRESS.
+                        ;	  IF IT IS ZERO THEN LOAD TO PAGE 0, IF NOT LOAD TO THE PAGE IN THE FIELD
+                        ;	  I.E.  00XXXX, 01XXXX ETC
+                        ;;
+                        ;	ALGORITHM TAKEN FROM DDJ #22
+                        ;
+                        ;	R3  HOLDS CHECKSUM
+                        ;	R4  HOLDS RECORD LENGTH
+                        ;	R5  HOLDS LOAD ADDRESS
+                        ;
+                        ;***************************************************************
+                        ;
+  F882   0202 3A00      HEXLOAD2:	LI	R2,':'*256
+  F886   2F41           	READ	R1		;SEARCH FOR ':'
+  F888   9081           	CB	R1,R2		;COMPARE BYTE FOR :
+  F88A   16FB           	JNE	HEXLOAD2
+  F88C   2F20 F16A      	WRITE	@DOT		;DEBUG INFO
+  F890   04C3           	CLR 	R3		;CLEAR CHECKSUM
+  F892   06A0 F8E2      	BL	@NEXTBYTE		;GET RECORD LENGTH
+  F896   D101           	MOVB	R1,R4
+  F898   0984           	SRL	R4,8		;LENGTH IN R4
+  F89A   13F1           	JEQ	INST_EXIT		;WERE DONE
+  F89C   06A0 F8E2      	BL	@NEXTBYTE		;GET PAGE SETTING BYTE.
+  F8A0   D241           	MOVB	R1,R9		;MOVE INTO PAGE/SEGMENT REGISTER
+                        ;
+                        ;	SHOW AND SET PAGE AND CORRECT FOR CHECKSUM (AB	R1,R3)
+                        ;
+  F8A2   70C1           	SB	R1,R3
+  F8A4   2F20 F16C      	WRITE	@PLUS
+  F8A8   2C00           	FAR_REF			;SET PAGE/SEGMENT REGISTER ADDRESS
+                        ;
+  F8AA   06A0 F8CC      HL_21	BL	@NEXTADDR		;GET LOAD ADDRESS
+  F8AE   C141           	MOV	R1,R5
+  F8B0   06A0 F8E2      	BL	@NEXTBYTE		;GET RECORD TYPE
+  F8B4   C104           HL_22	MOV	R4,R4		;IF RL=0 GO TO A13
+  F8B6   1306           	JEQ	HL_23
+  F8B8   06A0 F8E2      	BL	@NEXTBYTE
+  F8BC   07C0           	LDD			;LONG DISTANCE DESTINATION WRITE
+  F8BE   DD41           	MOVB	R1,*R5+		;STORE DATA IN MEMORY
+  F8C0   0604           	DEC	R4		;REDUCE RECORD LENGTH
+  F8C2   10F8           	JMP	HL_22
+  F8C4   06A0 F8E2      HL_23	BL	@NEXTBYTE		;GET CHECKSUM BYTE
+                        ;	MOVB	R3,R3		;CHECK FOR ZERO
+  F8C8   13DC           	JEQ	HEXLOAD2
+  F8CA   10D5           	JMP	HL_14
+                        ;
+  F8CC   064A           NEXTADDR:	DECT	SP		;SAVE BL RETURN ADDRESS ON STACK
+  F8CE   C68B           	MOV	R11,*SP
+  F8D0   06A0 F8E2      	BL	@NEXTBYTE
+  F8D4   C141           	MOV	R1,R5
+  F8D6   06A0 F8E2      	BL	@NEXTBYTE
+  F8DA   C2FA           	MOV	*SP+,R11
+  F8DC   06C1           	SWPB	R1
+  F8DE   E045           	SOC	R5,R1
+  F8E0   045B           	RT
+                        ;
+  F8E2   064A           NEXTBYTE:	DECT	SP		;SAVE BL RETURN ADDRESS
+  F8E4   C68B           	MOV	R11,*SP
+  F8E6   04C2           	CLR 	R2		;ACCUMULATOR
+  F8E8   2F41           	READ	R1
+  F8EA   06A0 F902      	BL	@CATOH		;CONVERT ASCII TO HEX
+  F8EE   D081           	MOVB	R1,R2
+  F8F0   0A42           	SLA	R2,4		;MOVE IT OVER
+  F8F2   2F41           	READ	R1		;NEXT ASCII CHAR
+  F8F4   06A0 F902      	BL	@CATOH
+  F8F8   C2FA           	MOV	*SP+,R11		;POP RETURN ADDRESS
+  F8FA   F081           	SOCB	R1,R2		;BYTE NOW IN R1
+  F8FC   C042           	MOV	R2,R1
+  F8FE   B0C1           	AB	R1,R3		;UPDATE CHECKSUM
+  F900   045B           	RT
+                        ;
+                        ;	ASCII TO HEX CONVERTER
+                        ;
+  F902   0281 3900      CATOH:	CI	R1,'9'*256
+  F906   1202           	JLE	CATOH_1
+  F908   0221 0900      	AI	R1,0900H		;ALPHA ADJUST
+  F90C   0241 0F00      CATOH_1	ANDI	R1,0F00H
+  F910   045B           	RT
+                        ;
+                        ;---INITIALISE TMS9902 FOR BAUD RATE OF 19200:
+                        ;   PROTOCOL SETTINGS
+                        ; 	*BAUD RATE
+                        ;	*8 BITS/CHARACTER
+                        ;	*NO PARITY
+                        ;	*2 STOP BITS
+                        ;
+  0080                  CRUBASE: 	EQU	0080H
+                        ;
+                        ;CTL02	BYTE	43H		;43H FOR A 3 MHZ CLOCK 4B FOR A 4 MHZ CLOCK
+  F912   4B             CTL02	BYTE	4BH		;4BH FOR A 4 MHZ CLOCK
+  F913   00             	EVEN
+  F914   0002 0009      BD57600	WORD	2,9H 		;BAUD RATE = 57600
+  F918   0009 001A      BD19200 	WORD	9,1AH		;BAUD RATE = 19200
+  F91C   0013 0034      BD9600	WORD 	19,34H		;BAUD RATE = 9600
+                        ;
+  F920   0360           INITIAL:	RSET			;RSET
+  F922   02E0 EF00      	LWPI	WORKSP2		;USE MONITOR LOCAL WORKSPACE
+  F926   020A 0500      	LI	SP,STACKP		;STACK FOR LOCAL MONITOR USE
+                        ;
+                        ;DISABLE ALL INTERRUPTS WHILE INITALISING
+                        ;
+  F92A   020C 0080      	LI	R12,CRUBASE
+  F92E   1D1F           	SBO	31		;RESET TMS9902
+  F930   3220 F912      	LDCR	@CTL02,8
+  F934   1E0D           	SBZ	13		;DO NOT SET INTERVAL REGISTER
+  F936   04C3           	CLR	R3		;RESET LOOP COUNT
+  F938   1F0F           TSTSP	TB	15		;SPACE
+  F93A   13FE           	JEQ	TSTSP		;NO JUMP BACK
+  F93C   0583           SPLOOP	INC	R3		;TIME THE START BIT
+  F93E   1F0F           	TB	15		;FALL OUT ON MARK
+  F940   16FD           	JNE	SPLOOP
+                        ;
+                        ;---TABLE SEARCH FOR BAUD RATES
+                        ;	SET AT 19200 or BD57600
+                        ;
+                        ;	LI	R7,BD19200		;SET POINTER TO TABLE
+  F942   0207 F914      	LI	R7,BD57600		;SET POINTER TO TABLE
+  F946   05C7           	INCT	R7		;POINT TO THE NEXT WORD THAT HOLDS THE TMS9902 CODES
+                        ;
+                        ; LOAD THE BAUD RATE VALUES
+                        ;
+                        
+  F948   3317           BDMATCH	LDCR	*R7,12 		;INT RECV/TXMT DATA RATE
+  F94A   32D7           	LDCR	*R7,11
+  F94C   3607           	STCR	R7,8		;PULL OUT ANY JUNK
+  F94E   3607           	STCR	R7,8
+                        ;
+                        ; CLEAR COMMON MEMORY AND SET SEGMENT
+                        ;
+  F950   02E0 EF00      	LWPI	WORKSP2		;NEED TO USE WORKSP2 TO BE ABLE TO CLEAR MEMORY
+  F954   06A0 F982      	BL	@CLRMEM		;CLEAR MEMORY
+  F958   02E0 0230      	LWPI	WORKSP		;STANDARE WORKSPACE FOR MONITOR
+  F95C   020A 0500      	LI	SP,STACKP
+                        ;	BL	@SETSEGMENT		;MAKE SURE WE ARE IN SEGMENT 0
+                        
+                        ;
+                        ; NOW INITIALISE MONITOR
+                        ;
+  F960   02A0           	STWP	R0
+  F962   C800 EF44      	MOV	R0,@WPSTORE
+  F966   06A0 F1EA      	BL	@INIT_VECTORS		;INITIALISE ALL XOP AND INTERRUPT VECTORS
+  F96A   04C9           	CLR	R9
+  F96C   2C00           	FAR_REF
+  F96E   06A0 F2C0      	BL	@IDE_READY		;SEE IF IT IS READY
+  F972   C041           	MOV	R1,R1
+  F974   1304           	JEQ	INITIAL1
+  F976   2FA0 F135      	MESG	@MESS05
+  F97A   2FA0 F129      	MESG	@MESS03		;CRLF
+  F97E   0460 F048      INITIAL1	B	@BANNER
+                        
+                        
+                        
+                        ; CLEAR COMMON MEMORY
+                        ;
+  F982   04C1           CLRMEM:	CLR	R1
+  F984   04F1           CLRMEM0	CLR	*R1+
+  F986   0281 0500      	CI	R1,TPA
+  F98A   16FC           	JNE	CLRMEM0
+  F98C   045B           	RT
+                        
+                        	;
+                        ; CLEAR PAGE ADDESSES AND REVERT TO PAGE 0
+                        ;
+  F98E   02CF           SETSEGMENT:	STST	R15
+  F990   024F FF7F      	ANDI	R15,DISABLE_PSEL	;DISABLE /PSEL MEMORY MAPPER
+  F994   008F           	LST	R15
+  F996   04C9           	CLR	R9		;CLEAR SEGEMENT AND SELECT PAGE 0
+  F998   020C 80C0      	LI	PORT,MEMBASE
+  F99C   3089           	LDCR	R9,BYTEWIDE		;GET PAGE VALUE FROM STEP ABOVE;
+  F99E   045B           	RT
+                        ;
+                        ;---Place load vectors into FFFC & FFFE AND BANNER RETURN POINT
+                        ;
+  FFF8                  	AORG	0FFF8H
+  FFF8   0230           	WORD	WORKSP
+  FFFA   F048           	WORD	BANNER
+  FFFC   0230           	WORD	WORKSP
+  FFFE   F920           	WORD	INITIAL
+                        ;
+  0000                  	END
+
+No error(s).
+DMACMD           00E2  ST_REG           F721  XR12             000C  IDE_DRDY         0040  
+XR14             000E  RETF             2C40  XR15             000F  INTAB            F0AE  
+LIST_REGC        F6DE  CATOH            F902  IDE_GET_ERROR    F30A  DEBUG_NAME       EF20  
+IDE_READ_DATA    F404  BMSG1            F266  MASK3            F0F0  MWBOOT           F228  
+PORT             000C  MRDREC           F2A4  REGIST0          F752  DMAPORT          00E8  
+R10              000A  MEMBASE          80C0  DRIVE_ID         F2F0  SUBTAB           F0C4  
+PC_REG           F728  XOPWP            0130  MRDTRK           F2B0  MBOOT            F22A  
+IDE_WR_LBA       F45C  IDE_IRQ          F2E0  RD0              F358  PROMPT           F050  
+MON00A           F7B8  IDE_HEAD         804C  PRINT_REGS       F746  OUTPUT0          F7D6  
+MRECAL           F2A0  MCOUT            F292  R1               0001  TSTSP            F938  
+R2               0002  R14              000E  BSY1             F2C6  XOPWP0           0130  
+BSY2             F3E4  XOPWP1           0140  MRDDBR           F2AA  IDE_READY        F2C0  
+XOP14A           F666  XOPWP3           0160  PUSH             2E00  XOPWP2           0150  
+XOP15_REGS       F68C  XOPWP4           0170  IDE_ERR          0001  XOPWP5           0180  
+IDE_CMD_WRITE    3000  LOCAL_RAM        EF00  INIT1            F1F4  XOPWP7           01A0  
+LOWW             F100  XOPWP6           0190  R11              000B  XOPWP8           01B0  
+PRINT            F102  XOPWP9           01C0  MWRREC           F2B4  NOTHEX           F638  
+INTWP            00B0  LDS              0780  READ             2F40  IDE_CONTROL      804C  
+RD1              F38A  MCIN             F28E  DRQ_X            F402  XOPWP11          01E0  
+INTWP1           00C0  STACKP           0500  NUMTAB           F08E  HL_21            F8AA  
+INTWP4           00F0  OUTPUT           F7CE  INTWP5           0100  IDE_DWF          0020  
+INTWP3           00E0  BMSG2            F276  WRITE            2F00  XOP10            F5E8  
+IDE_WRITE_DATA   F430  IDE_CMD_RECAL    1000  INTWP6           0110  CATOH_1          F90C  
+DRVMSG           F506  INST_EXIT        F87E  RL11             F40E  BYTEWIDE         0002  
+RL12             F424  IDE_BSY          0080  INIT2            F1FE  OUTPUT1          F7E4  
+MON02            F06E  XOP4A            F592  R12              000C  XOP5A            F5A4  
+MRDID            F2A2  R15              000F  OPEN01           F798  WAITRDY          F2C2  
+OPEN02           F7A4  IDE_NOT_BUSY     F3E0  OPEN00           F794  PAGE             F286  
+XR4              0004  XOP10A           F5EE  SP               000A  MSELDSK          F29A  
+ST               000F  XOP10B           F5FE  IDE_SEC_CNT      8044  IDE_WAIT_DRQ     F3EE  
+SETBP            F0F4  XOP0             F522  DEBUG            2FC0  XOP1             F536  
+IDE_CMD_INIT     9100  XOP2             F552  INIT_VECTORS     F1EA  XOP3             F564  
+IGE_X            F31C  XOPWP12          01F0  PADDRC           F7BC  XOP5             F5A0  
+SSTEP            F0F2  XOP4             F58C  INT1             F1DA  XOP6             F5B2  
+INT3             F4D0  POP              2E40  INT7             F1E2  XOP7             F5C2  
+SPLOOP           F93C  XOP8             F5CE  DISC_PARAM       EF3E  XOP9             F5DC  
+INIT3            F206  EN_PSEL          0080  RET              2DC0  WRITE_DBR        F3BA  
+CR               000D  RHEX             2EC0  R13              000D  HL_12            F862  
+DRQ1             F3F6  CALL             2D80  BUFFER           ED00  HL_22            F8B4  
+FAR_REF          2C00  MESS00           F104  INTTAB           F1BA  MESS01           F122  
+SP_REG           F72F  XOP11            F60C  LF               000A  MESS02           F126  
+QBOOT            F73E  RSET             F4A6  LOADERR          F16E  MESS03           F129  
+XOP13A           F650  DISABLE_PSEL     FF7F  BOOT1            F252  MESS05           F135  
+WORKSP           0230  MESS04           F131  XR2              0002  SECTMSG          F518  
+XOP14            F65C  WP00             F816  BYTSEC           0200  FDCSTATUS        EF3E  
+R0               0000  DOT              F16A  R3               0003  CRLF             F044  
+R5               0005  IDE_COMMAND      804E  R7               0007  EA_REG           F737  
+R9               0009  SWITCH_SEG       F826  BOOT2            F25A  MESG             2F80  
+MON01            F064  LIST_REGA        F6CC  SETSEGMENT       F98E  OUTPUT2          F7EE  
+XR3              0003  MWRTRK           F2B2  WORKSP2          EF00  IDE_CYL_LSB      8048  
+INTWP2           00D0  XCUTE            F0FE  IDE_ERROR        8042  LDD              07C0  
+INTWP7           0120  GOTONE           F62E  IDE_DSC          0010  XOP15_MAIN       F67E  
+MSEEK            F4C8  DEBUG_BUFFER     EF2A  HEXIN            F146  XOPTAB           F17A  
+CRUBASE          0080  HEXLOAD          F83E  HEXIN1           F154  XOP11A           F60E  
+IDE_DATA         8040  XOP11B           F612  WHEX             2E80  BDMATCH          F948  
+IDE_CMD_ID       EC00  INIT_RAM         F21A  IDE_STATUS       804E  WP               F80E  
+XOP15_NAME       F670  HEXTAB           F07E  INTSYS           F4A4  HEXLOAD2         F882  
+BANNER           F048  LIST_REG         F698  CALL_FAR         2CC0  XOPWP13          0200  
+PLUS             F16C  MWRDBR           F2BA  INITIAL1         F97E  MASK15           F0EE  
+MON03            F074  IDE_SECTOR       8046  CHAR             F0F8  TIMEOUT          EF40  
+BDOSV            0084  IDE_MSG1         F31E  XOPWP10          01D0  HL_13            F870  
+IDE_CMD_SUP      E100  HL_23            F8C4  TIME2            F4F0  LIST_REG1        F6E4  
+XOPWP15          0220  XOP12            F63C  SELMUX           0000  TRKMSG           F50F  
+SETTIMER         F4A8  WL11             F43A  R6               0006  WL12             F450  
+WPSTORE          EF44  CTL02            F912  XOPWP16          0230  RAM_SIZE         0008  
+XOP15            F668  GO               F742  IDE_BASE_PORT    8040  LIST_REGB        F6D8  
+BD9600           F91C  OUTPUT3          F800  XOPVEC           0040  IDE_CYL_MSB      804A  
+HEXIN0           F14C  INIT_MONITOR     F000  OPEN03           F7AE  TRACE            F0F6  
+READ_SECTOR      F330  DMAADDR          00E0  OPEN             F790  ERRMSG           F4F2  
+INT2             F4CE  CLRMEM0          F984  BD57600          F914  XOP12A           F642  
+IDE_CMD_READ     2000  XR9              0009  IDE_CMD_SDOWN    E000  IDE_DRQ          0008  
+READY            F2DC  NEXTADDR         F8CC  DISC_INUSE       EF42  INTLV2           F4C6  
+R4               0004  IDE_WRITE_DBR    F448  REGIST1          F762  WP_REG           F71A  
+INTWP0           00B0  XOPWP14          0210  MONORG           F000  INTVEC           0000  
+HEXIN2           F162  IDE_DMARQ        F2E8  SETSREG          2C80  CMDTBL           F040  
+TPA              0500  INTTIMER         F4D2  BD19200          F918  HL_14            F876  
+MON_PTR          0088  LIST_REG2        F6E8  R8               0008  XOP13            F64C  
+WRITE_SECTOR     F394  READ_DBR         F362  FIND             F0FC  NEXTBYTE         F8E2  
+LBA              00A8  BOOT_ADDR        F008  REGIST2          F766  INITIAL          F920  
+XR13             000D  IDE_READ_DBR     F41C  CLRMEM           F982  XR10             000A  
+XR11             000B  MOVE             F0FA  
+
